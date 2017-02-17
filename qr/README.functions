@@ -1,0 +1,15 @@
+***** Defines
+    USE_ASSERTS -   use runtime asserts; OK to use in production if the
+                    runtime allows assert call
+    STDANNEX    -   use only ISO 18004:2006(E) prescribed bitstream
+                    optimizations; not always optimal
+    RFC4648     -   use RFC4648 for Base32 encoding; normally the modified
+                    version is used that is slightly more bit-effective.
+                    In both versions the "Extended Hex" Base32 Alphabet is
+                    used to increase the chances for Numeric encoding to
+                    be used
+    DEBUG       -   Use debugging prints over the code. Don't use in production
+
+***** Functions
+From: ctype.h
+    isdigit

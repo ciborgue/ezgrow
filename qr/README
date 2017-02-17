@@ -1,0 +1,29 @@
+$Id: README 66 2011-07-03 08:55:11Z yegor $
+
+qrInterface is a customer front-end to the library.
+
+hint:
+This is for internal debugging ONLY; please set to zero.
+
+url:
+URL parameter is a null-terminated string of a web-based handler, including
+the 'http' prefix all up to '?'; for the purpose of this demo please use
+'http://yegor.dyndns.tv:8888/cgi-bin/clbk?' (no quotation marks).
+
+srcLen and src:
+The buffer that holds '0210...' and '0212...' packets concatinated together
+and their total length (binary data, please don't use BASE64 or ASCII).
+
+dst:
+You have to provide a buffer big enough to hold the whole matrix of desired
+size (in char *); for example for v1 (21x21) you need 21x21 = 441 bytes.
+
+Return value is a QR version that fits source data (or -1 if if doesn't fit).
+Also, dst is filled with data where 1 byte represents 1 'module', or block
+starting from the upper-left corner and going down.
+
+See the QRSIZE macro for the matrix dimension (calculate for the result value).
+
+Please also note that only one LSB matters and tells you if the module is
+black or white (dst[y*QRSIZE(ver)+x] & 1); other bits are used for internal
+purposes and should be masked out.
