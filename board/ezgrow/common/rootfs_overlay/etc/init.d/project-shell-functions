@@ -1,0 +1,89 @@
+# Some common site tools; they aren't Linux standard so we use
+# the unique name to avoid name clash with standard Linux. There's
+# no point to 'safeguard' this script inclusion within the target
+# scripts as if it is missing there's no reasonable fallback
+# scenario.
+
+get_script_name() {
+	echo ${1##*[SK][0-9][0-9]}
+}
+bind_is_mounted() {
+	test $(mount | grep -c " on $1 type ") -gt 0
+		value=$?
+		echo $value; return $value
+}
+load_defaults() {
+	[[ -f "/etc/default/$1" ]] && . "/etc/default/$1"
+	[[ -n "$SITE_MOUNTPOINT" -a \
+		-f "$SITE_MOUNTPOINT/etc/default/$1" ]] && \
+			. "$SITE_MOUNTPOINT/etc/default/$1"
+	[[ -n "$MODULE_DISABLED" -a "$MODULE_DISABLED" = "yes" ]] && \
+		exit 0
+	PIDFILE="/var/run/$1.pid"
+}
+# make sure that the system date is newer than the system build date
+# just in case there's no RTC and the only way to get the date is NTP
+wait_for_realistic_date() {
+	while [[ $((count++)) -lt 32 ]]; do
+		touch /run/timestamp
+		[[ /run/timestamp -nt /bin/busybox ]] && return 0
+		sleep 5
+	done
+	return 1
+}
+report_info() {
+	logger -t $(basename $0) -s -p info $*
+}
+report_ok_fail() {
+	value=$?
+	if [[ $value -ne 0 ]]; then
+		logger -t $(basename $0) -s -p info "FAIL"
+	else
+		logger -t $(basename $0) -s -p info "OK"
+	fi
+	return $value
+}
+start() {
+	report_info "Starting $NAME .."
+	start-stop-daemon -S --background --make-pidfile \
+		--pidfile ${PIDFILE} ${CHUID} --exec $NAME -- $DAEMON_ARGS
+	report_ok_fail
+}
+stop() {
+	report_info "Stopping $NAME: .."
+	start-stop-daemon -K --name $NAME --pidfile ${PIDFILE}
+	report_ok_fail
+}
+status() {
+	output=$(start-stop-daemon -K -t --name $NAME \
+		--pidfile ${PIDFILE} 2> /dev/null)
+	if [[ $? -eq 0 ]]; then
+		report_info "$NAME is running; ${output//*(/(}"
+	else
+		report_info "$NAME is NOT running"
+	fi
+}
+restart() {
+	stop
+	sleep 1
+	start
+}
+usage() {
+	echo "Usage: $0 {start|stop|status|restart}" >&2
+	exit 1
+}
+
+# load system defaults, including SITE_MOUNTPOINT for the update check
+load_defaults system
+
+# see if it is possible to reseed /dev/urandom from the hardware RNG
+# it never hurts so just do it every time
+[[ -c /dev/hwrng -a -c /dev/urandom ]] && \
+	dd if=/dev/hwrng of=/dev/urandom count=1 2> /dev/null
+
+# check if an updated version of this script exists; load it if so
+# note that you can't use '$0' here so scriptlet name must match the
+# actual name used
+[[ -n "$SITE_MOUNTPOINT" -a \
+	-r "$SITE_MOUNTPOINT/etc/init.d/project-shell-functions" ]] && \
+	. "$SITE_MOUNTPOINT/etc/init.d/project-shell-functions"

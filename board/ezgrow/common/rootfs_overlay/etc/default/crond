@@ -1,0 +1,2 @@
+CROND_ARGS="-f"
+#MODULE_DISABLED=yes

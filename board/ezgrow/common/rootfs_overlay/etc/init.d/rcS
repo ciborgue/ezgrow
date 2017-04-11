@@ -1,0 +1,26 @@
+#!/bin/sh
+
+. /etc/init.d/project-shell-functions
+
+default="/etc/init.d"
+site_specific="$SITE_MOUNTPOINT/$default"
+
+if [[ $(basename $0) = "rcS" ]]; then
+	cmnd='start'
+	fltr='S'
+else
+	cmnd='stop'
+	fltr='K'
+fi
+
+for script in $(ls ${default} ${site_specific} 2> /dev/null | \
+		grep "^${fltr}[[:digit:]][[:digit:]]" | sort | uniq); do
+	if [[ -f ${site_specific}/${script} ]]; then
+		${site_specific}/${script} ${cmnd}
+	elif [[ -f ${default}/${script} ]]; then
+		${default}/${script} ${cmnd}
+	else
+		# not sure if we can ever get here; keep it just in case
+		report_info "Error: no ${script} in ${default}, ${site_specific}"
+	fi
+done

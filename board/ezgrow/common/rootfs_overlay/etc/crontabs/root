@@ -1,0 +1,1 @@
+#0 */30 * * * /home/ganja/bin/ezgrow -c /etc/ezgrow/ezgrow.conf -a

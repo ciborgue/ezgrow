@@ -1,0 +1,7 @@
+#!/bin/sh
+
+if [[ -x "/site/home/ganja/bin/ezgrow" ]]; then
+	/site/home/ganja/bin/ezgrow
+else
+	/usr/share/ezgrow/ezgrow.rb.sample
+fi

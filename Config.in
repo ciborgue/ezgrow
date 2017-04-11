@@ -1,0 +1,3 @@
+source "$BR2_EXTERNAL_EZGROW_PATH/package/cc1101d/Config.in"
+source "$BR2_EXTERNAL_EZGROW_PATH/package/bme280d/Config.in"
+source "$BR2_EXTERNAL_EZGROW_PATH/package/adsadcd/Config.in"

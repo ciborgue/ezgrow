@@ -1,0 +1,1 @@
+DAEMON_ARGS="-a -i /etc/network/interfaces"

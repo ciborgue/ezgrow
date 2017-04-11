@@ -1,29 +1,27 @@
-# Compiled Object files
-*.slo
-*.lo
+growbox.board/genimage-growbox.cfg
+growbox.board/post-image.sh
+foo
+bar
 *.o
-*.obj
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
-
-# Executables
-*.exe
-*.out
-*.app
+.*.swp
+.deps
+src/bme280d
+src/cc1101d
+src/adsadcd
+tests
+tags
+autom4te.cache
+aclocal.m4
+config.log
+config.status
+configure
+compile
+install-sh
+missing
+Makefile
+Makefile.in
+config.h
+config.h.in
+stamp-h1
+depcomp
+buildroot-external/configs/*_defconfig

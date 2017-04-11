@@ -1,0 +1,4 @@
+PRE_start='touch /var/lib/misc/udhcpd.leases'
+DAEMON_ARGS="-f -S /etc/udhcpd.conf"
+
+#MODULE_DISABLED=yes

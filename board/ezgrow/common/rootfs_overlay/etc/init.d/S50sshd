@@ -1,0 +1,36 @@
+#!/bin/sh
+
+. /etc/init.d/project-shell-functions
+
+NAME=$(get_script_name $0)
+load_defaults $NAME
+
+start() {
+	if [[ $(bind_is_mounted /etc/ssh) -ne 0 -a \
+		-d $SITE_MOUNTPOINT/etc/ssh -a \
+		-r $SITE_MOUNTPOINT/etc/ssh/moduli ]]; then
+		report_info "Mounting site SSH config $SITE_MOUNTPOINT/etc/ssh"
+		mount -o bind $SITE_MOUNTPOINT/etc/ssh /etc/ssh
+	fi
+	report_info "Starting sshd: "
+	/usr/sbin/sshd $DAEMON_ARGS
+	report_ok_fail
+}
+stop() {
+	report_info "Stopping sshd: "
+	killall sshd
+	while [[ $(bind_is_mounted /etc/ssh) -eq 0 ]]; do
+		report_info "Unmounting site SSH config.."
+		umount /etc/ssh
+		report_ok_fail
+	done
+	report_ok_fail
+}
+
+case "$1" in
+	start|stop|status|restart)
+		$1
+	;;
+	*)
+		usage
+esac

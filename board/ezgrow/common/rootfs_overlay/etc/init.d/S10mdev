@@ -1,0 +1,41 @@
+#! /bin/sh
+
+. /etc/init.d/project-shell-functions
+
+NAME=$(get_script_name $0)
+load_defaults $NAME
+
+### there's no command line option for 'mdev' so mount must be used
+umountMdevConf() {
+	while [[ $(mount | grep -c " ${MDEV_CONF} ") -ne 0 ]]; do
+		umount ${MDEV_CONF}
+	done
+}
+case "$1" in
+	start)
+		report_info "Starting $NAME .."
+		if [[ -f ${SITE_MOUNTPOINT}${MDEV_CONF} ]]; then
+			umountMdevConf
+			mount -o ro,bind ${SITE_MOUNTPOINT}${MDEV_CONF} ${MDEV_CONF}
+		fi
+		report_info "Enabling mdev seq option .."
+		touch /dev/mdev.seq
+		report_ok_fail
+		if [[ -n "$MDEV_LOGGING" ]]; then
+			report_info "Enabling mdev logging .."
+			touch /tmp/mdev.log
+			ln -s /tmp/mdev.log /dev
+			report_ok_fail
+		fi
+		sysctl -qw kernel.hotplug="/sbin/mdev"
+		mdev -s
+		report_ok_fail
+	;;
+	stop)
+		report_info "Stopping $NAME: .."
+		umountMdevConf
+		report_ok_fail
+	;;
+	*)
+		usage
+esac

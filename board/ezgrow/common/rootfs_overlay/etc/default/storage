@@ -1,0 +1,2 @@
+STORAGE_BLOCK_DEVICE="/dev/mmcblk0p6"
+STORAGE_MOUNT_OPTS="defaults,nosuid,nodev,noatime,discard"

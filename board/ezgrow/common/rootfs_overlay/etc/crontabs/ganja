@@ -1,0 +1,3 @@
+# I wish I could make everything run by dedicated user 'ganja' but for now
+# BusyBox crond silently refuses to execute crontabs for anything than 'root'
+#* * * * * /home/ganja/bin/switched-pdu

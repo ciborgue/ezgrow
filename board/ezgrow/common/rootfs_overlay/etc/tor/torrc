@@ -1,0 +1,22 @@
+ORPort			        1984
+DirPort			        1985
+
+Log notice syslog
+
+MaxMemInQueues	256M
+
+ContactInfo 		"george (at) ax (dot) ru"
+Address		    	yegor.myphotos.cc
+Nickname    		growboxRPi
+
+ExitPolicy      reject *:*
+
+DataDirectory   /tmp/tor
+
+EntryStatistics     1
+ExtraInfoStatistics 1
+
+AvoidDiskWrites     1
+ExitRelay           0
+
+SafeLogging         1

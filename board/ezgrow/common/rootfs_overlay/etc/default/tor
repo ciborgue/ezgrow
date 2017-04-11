@@ -1,0 +1,9 @@
+TOR_DATADIR="/tmp/tor"
+TOR_USER="tor-anon"
+TOR_GROUP="tor-anon"
+UPNPC_ARGS="-u http://172.16.0.1:1780/InternetGatewayDevice.xml"
+
+CHUID="--chuid ${TOR_USER}:${TOR_GROUP}"
+DAEMON_ARGS="-f /etc/tor/torrc"
+
+MODULE_DISABLED="yes"

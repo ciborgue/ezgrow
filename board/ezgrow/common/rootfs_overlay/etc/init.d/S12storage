@@ -1,0 +1,51 @@
+#!/bin/sh
+
+. /etc/init.d/project-shell-functions
+
+NAME=$(get_script_name $0)
+load_defaults $NAME
+
+makeFilesystem() {
+  report_info "Filesystem is missing/corrupted, making one .."
+  mkfs.ext4 -F -m 0 -L "DATA" -e remount-ro -E root_owner=0:0 \
+    ${STORAGE_BLOCK_DEVICE} > /dev/null 2>&1
+  report_ok_fail
+}
+
+if [[ ! -d ${STORAGE_MOUNTPOINT} ]]; then
+	report_info "Can't create mount point, Linux image is invalid; exiting."
+	exit 1
+fi
+
+if [[ "$1" = 'stop' ]]; then
+	report_info "Unmounting ${STORAGE_MOUNTPOINT} .."
+	umount ${STORAGE_MOUNTPOINT}
+	exit 0
+elif [[ "$1" != 'start' ]]; then
+  echo "Wrong usage: must be 'start' or 'stop'"
+	exit 1
+fi
+
+report_info "Checking if partition has to be overwritten .."
+if [[ $(dd if=${STORAGE_BLOCK_DEVICE} count=1 2> /dev/null | \
+  hexdump -C | grep -c 'REPLACE THIS ONE') -gt 0 ]]; then
+  makeFilesystem
+fi
+
+report_info "Checking filesystem .."
+fsck.ext4 -p ${STORAGE_BLOCK_DEVICE}
+
+if [[ $? -ne 0 ]]; then
+  report_info "'fsck' returns error; fs is too damaged to be fixed; replacing"
+  makeFilesystem
+fi
+
+if [[ $? -ne 0 ]]; then
+  report_info "Filesystem is still no good; NOT attempting to mount"
+  exit 1
+fi
+
+report_info "Mounting ${STORAGE_BLOCK_DEVICE} on ${STORAGE_MOUNTPOINT} .."
+mount -t ext4 -o ${STORAGE_MOUNT_OPTS} \
+  ${STORAGE_BLOCK_DEVICE} ${STORAGE_MOUNTPOINT}
+report_ok_fail

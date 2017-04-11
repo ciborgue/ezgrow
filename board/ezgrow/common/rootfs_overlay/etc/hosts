@@ -1,0 +1,4 @@
+127.0.0.1		localhost
+
+172.31.255.254	ezgrow ezgrow-eth0
+172.31.255.32	switched-pdu

@@ -1,0 +1,42 @@
+#!/bin/sh
+
+. /etc/init.d/project-shell-functions
+
+getExternalIP() {
+	upnpc $UPNPC_ARGS -l 2> /dev/null | sed -e '/^ExternalIPAddress/!d' \
+		sed -e '/^.*[[:space:]]//'
+}
+getLocalIP() {
+	upnpc $UPNPC_ARGS -l 2> /dev/null | sed -e '/^Local LAN ip address/!d' \
+		sed -e '/^.*[[:space:]]//'
+}
+getRedirection() {
+	# $1 = description too look for
+	# returns an external port
+	upnpc $UPNPC_ARGS -l 2> /dev/null | sed -e '1,/^ i protocol/d' \
+		-e "/[[:space:]]\'$1\'[[:space:]]/!d" \
+		-e 's/-.*//;s/^.*[[:space:]]//'
+}
+
+NAME=$(get_script_name $0)
+load_defaults $NAME
+
+case "$1" in
+	start)
+		if [[ ! -d ${TOR_DATADIR} ]]; then
+			report_info "Tor data ${TOR_DATADIR} is missing, making .."
+			mkdir $TOR_DATADIR
+		fi
+		if [[ -f ${SITE_MOUNTPOINT}/etc/tor/tor.tar.xz ]]; then
+			xz -cd ${SITE_MOUNTPOINT}/etc/tor/tor.tar.xz | \
+				tar -x -C ${TOR_DATADIR} -f -
+		fi
+		chown -hR ${TOR_USER}:${TOR_GROUP} ${TOR_DATADIR}
+		start
+		;;
+	stop|status|restart)
+		restart
+	;;
+	*)
+		usage
+esac

@@ -1,0 +1,3 @@
+UDEV_CONFIG="/etc/udev/udev.conf"
+
+#MODULE_DISABLED="yes"

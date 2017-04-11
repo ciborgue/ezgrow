@@ -1,0 +1,14 @@
+#!/bin/sh
+
+if [[ -x "/site/home/ganja/switched-pdu" ]]; then
+	# this is the real PDU. Mine is Dataprobe iBootBar; I'll also provide
+	# script for the APC units. For anything else, like Solid State Relays
+	# controlled by the GPIO pins you should write your own script
+	/site/home/ganja/switched-pdu
+else
+	# this is the default script used for debugging with no actual PDU
+	# unit; this behaves just like the real one should without actually
+	# controlling anything
+	/usr/share/ezgrow/switched-pdu-null.rb.sample \
+		-c status -j /tmp/switched-pdu.json
+fi

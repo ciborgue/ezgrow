@@ -1,0 +1,41 @@
+#!/bin/sh
+
+mount -o rw,remount /boot
+
+cp /boot/cmdline.txt /boot/cmdline.txt.old
+rootOld=$(cat /boot/cmdline.txt \
+	| sed -e 's/.*root=\([^[:space:]]\{1,\}\).*/\1/')
+case ${rootOld##?*p} in
+	2)
+		echo "I'm on 2, writing to 3 .." 1>&2
+		rootNew=${rootOld%?}3
+	;;
+	3)
+		echo "I'm on 3, writing to 2 .." 1>&2
+		rootNew=${rootOld%?}2
+	;;
+	*)
+		echo "Something went wrong, quitting .."
+		exit 1
+esac
+cat /boot/cmdline.txt.old \
+	| sed -e "s!root=[^[:space:]]\{1,\}!root=${rootNew}!" \
+	> /boot/cmdline.txt
+
+mount -o ro,remount /boot
+
+dd of=${rootNew} bs=64k conv=fsync
+
+cat <<EOF
+
+######   #######  ######   #######  #######  #######  ###  #     #   #####
+#     #  #        #     #  #     #  #     #     #      #   ##    #  #     #
+#     #  #        #     #  #     #  #     #     #      #   # #   #  #
+######   #####    ######   #     #  #     #     #      #   #  #  #  #  ####
+#   #    #        #     #  #     #  #     #     #      #   #   # #  #     #
+#    #   #        #     #  #     #  #     #     #      #   #    ##  #     #
+#     #  #######  ######   #######  #######     #     ###  #     #   #####
+
+EOF
+
+reboot

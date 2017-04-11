@@ -1,0 +1,48 @@
+diff -ru a/devLib/Makefile b/devLib/Makefile
+--- a/devLib/Makefile	2017-03-11 22:29:59.073977911 -0800
++++ b/devLib/Makefile	2017-03-11 22:31:18.324648854 -0800
+@@ -35,7 +35,7 @@
+ DYNAMIC=libwiringPiDev.so.$(VERSION)
+ 
+ #DEBUG	= -g -O0
+-DEBUG	= -O2
++DEBUG	= -Os
+ CC	?= gcc
+ INCLUDE	= -I../wiringPi
+ DEFS	= -D_GNU_SOURCE
+diff -ru a/gpio/Makefile b/gpio/Makefile
+--- a/gpio/Makefile	2017-03-11 22:29:59.074977945 -0800
++++ b/gpio/Makefile	2017-03-11 22:31:44.675536945 -0800
+@@ -31,7 +31,7 @@
+ endif
+ 
+ #DEBUG	= -g -O0
+-DEBUG	= -O2
++DEBUG	= -Os
+ CC	?= gcc
+ INCLUDE = -I../wiringPi -I../devLib
+ CFLAGS	+= $(DEBUG) -Wall -Wextra $(INCLUDE) -Winline -pipe
+diff -ru a/wiringPi/Makefile b/wiringPi/Makefile
+--- a/wiringPi/Makefile	2017-03-11 22:29:59.075977979 -0800
++++ b/wiringPi/Makefile	2017-03-11 22:31:56.485934985 -0800
+@@ -35,7 +35,7 @@
+ DYNAMIC=libwiringPi.so.$(VERSION)
+ 
+ #DEBUG	= -g -O0
+-DEBUG	= -O2
++DEBUG	= -Os
+ CC	?= gcc
+ INCLUDE	= -I.
+ DEFS	= -D_GNU_SOURCE
+diff -ru a/wiringPiD/Makefile b/wiringPiD/Makefile
+--- a/wiringPiD/Makefile	2017-03-11 21:10:34.000000000 -0800
++++ b/wiringPiD/Makefile	2017-03-11 22:32:05.763247655 -0800
+@@ -30,7 +30,7 @@
+ endif
+ 
+ #DEBUG	= -g -O0
+-DEBUG	= -O2
++DEBUG	= -Os
+ CC	= gcc
+ INCLUDE	= -I$(DESTDIR)$(PREFIX)/include
+ CFLAGS	= $(DEBUG) -Wall -Wextra $(INCLUDE) -Winline -pipe

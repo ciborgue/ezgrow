@@ -1,0 +1,4 @@
+PRE_start='mkdir -p /var/run/lirc'
+DAEMON_ARGS="-n -O /etc/lirc/lirc_options.conf"
+
+#MODULE_DISABLED=yes

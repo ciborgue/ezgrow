@@ -1,0 +1,2 @@
+DAEMON_ARGS="-x -n -c /etc/ntp.conf"
+#MODULE_DISABLED=yes

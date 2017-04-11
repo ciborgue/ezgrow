@@ -1,0 +1,2 @@
+DAEMON_SITE_CONFIG="/etc/wpa_supplicant/wpa_supplicant.conf"
+DAEMON_ARGS="-s -e /dev/urandom -Dnl80211 -iwlan0 -c$DAEMON_SITE_CONFIG"

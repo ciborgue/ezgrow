@@ -1,0 +1,41 @@
+#!/bin/sh
+
+. /etc/init.d/project-shell-functions
+
+NAME=$(get_script_name $0)
+load_defaults $NAME
+
+case "$1" in
+	start)
+		report_info "Starting $NAME: "
+		if [[ ! -c "/dev/rtc0" ]]; then
+			modprobe rtc-$RTC_MODULE
+			report_ok_fail
+			[[ $? -ne 0 ]] && exit 1
+			echo $RTC_MODULE $RTC_ADDRESS > \
+				/sys/class/i2c-adapter/i2c-1/new_device
+			sleep 1
+		fi
+		report_info "Checking if 'hwclock' can read .."
+		hwclock -r > /dev/null 2>&1
+		report_ok_fail
+		if [[ $? -eq 0 ]]; then
+			report_info "Setting system time from RTC .."
+			hwclock -us
+			report_ok_fail
+		fi
+    ;;
+	stop)
+		report_info "Stopping $NAME: "
+		rmmod rtc-$RTC_MODULE
+		report_ok_fail
+	;;
+	restart)
+		$1
+	;;
+	status)
+		report_info "$NAME: $1 is not implemented"
+	;;
+	*)
+		usage
+esac

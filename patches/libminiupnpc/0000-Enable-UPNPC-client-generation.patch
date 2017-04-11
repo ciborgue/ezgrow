@@ -1,0 +1,36 @@
+--- miniupnpc-2.0/CMakeLists.txt	2016-04-19 14:04:55.000000000 -0700
++++ miniupnpc-2.0/CMakeLists.txt	2017-02-21 22:38:17.947829666 -0800
+@@ -15,10 +15,10 @@
+         FORCE)
+ endif()
+ 
+-option (UPNPC_BUILD_STATIC "Build static library" TRUE)
++option (UPNPC_BUILD_STATIC "Build static library" FALSE)
+ option (UPNPC_BUILD_SHARED "Build shared library" TRUE)
+ if (NOT WIN32)
+-  option (UPNPC_BUILD_TESTS "Build test executables" TRUE)
++  option (UPNPC_BUILD_TESTS "Build test executables" FALSE)
+ endif (NOT WIN32)
+ option (NO_GETADDRINFO "Define NO_GETADDRINFO" FALSE)
+ 
+@@ -64,6 +64,7 @@
+ 
+ configure_file (${CMAKE_SOURCE_DIR}/miniupnpcstrings.h.cmake ${CMAKE_BINARY_DIR}/miniupnpcstrings.h)
+ include_directories (${CMAKE_BINARY_DIR})
++link_directories (${CMAKE_BINARY_DIR})
+ 
+ set (MINIUPNPC_SOURCES
+   igd_desc_parse.c
+@@ -121,7 +122,11 @@
+   set_target_properties (upnpc-shared PROPERTIES VERSION ${MINIUPNPC_VERSION})
+   set_target_properties (upnpc-shared PROPERTIES SOVERSION ${MINIUPNPC_API_VERSION})
+   target_link_libraries (upnpc-shared ${LDLIBS})
+-  set (UPNPC_INSTALL_TARGETS ${UPNPC_INSTALL_TARGETS} upnpc-shared)
++
++  add_executable (upnpc upnpc.c)
++  target_link_libraries (upnpc ${LDLIBS} miniupnpc upnpc-shared)
++
++  set (UPNPC_INSTALL_TARGETS ${UPNPC_INSTALL_TARGETS} upnpc upnpc-shared)
+   set (UPNPC_LIBRARY_TARGET upnpc-shared)
+ endif (UPNPC_BUILD_SHARED)
+ 

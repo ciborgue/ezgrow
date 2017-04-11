@@ -1,0 +1,22 @@
+diff -ru a/wiringPi/wiringPi.c b/wiringPi/wiringPi.c
+--- a/wiringPi/wiringPi.c	2017-03-11 21:10:34.000000000 -0800
++++ b/wiringPi/wiringPi.c	2017-03-11 22:22:02.230907115 -0800
+@@ -64,6 +64,7 @@
+ #include <time.h>
+ #include <fcntl.h>
+ #include <pthread.h>
++#include <asm/ioctl.h>
+ #include <sys/time.h>
+ #include <sys/mman.h>
+ #include <sys/stat.h>
+diff -ru a/wiringPi/wiringPiSPI.c b/wiringPi/wiringPiSPI.c
+--- a/wiringPi/wiringPiSPI.c	2017-03-11 21:10:34.000000000 -0800
++++ b/wiringPi/wiringPiSPI.c	2017-03-11 22:22:02.231907148 -0800
+@@ -27,6 +27,7 @@
+ #include <fcntl.h>
+ #include <errno.h>
+ #include <string.h>
++#include <asm/ioctl.h>
+ #include <sys/ioctl.h>
+ #include <asm/ioctl.h>
+ #include <linux/spi/spidev.h>

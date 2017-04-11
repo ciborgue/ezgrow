@@ -1,0 +1,27 @@
+#!/bin/sh
+
+. /etc/init.d/project-shell-functions
+
+NAME=$(get_script_name $0)
+load_defaults $NAME
+
+case "$1" in
+	start)
+		# sync time immediately and update RTC if RTC is present
+		step_tickers="$(cat /etc/ntp.conf | sed -e '/^server/!d' \
+			-e 's/^server[[:space:]]*//' -e 's/[[:space:]].*//')"
+		report_info "Setting time to step_tickers: $step_tickers"
+		ntpdate $step_tickers
+		if [[ $? -eq 0 -a -c /dev/rtc0 ]]; then
+			report_info "Setting hwclock to the world time .."
+			hwclock -w
+			report_ok_fail
+		fi
+		$1
+	;;
+	stop|status|restart)
+		$1
+	;;
+	*)
+		usage
+esac

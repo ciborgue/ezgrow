@@ -1,0 +1,10 @@
+config BR2_PACKAGE_BME280D
+	bool "bme280d"
+	depends on BR2_PACKAGE_WIRINGPI
+	depends on BR2_TOOLCHAIN_HAS_THREADS
+	help
+		BME280 is a temperature/humidity/air pressure I2C sensor
+
+comment "bme280d needs a toolchain w/ threads"
+	depends on BR2_USE_MMU
+	depends on !BR2_TOOLCHAIN_HAS_THREADS

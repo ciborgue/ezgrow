@@ -1,0 +1,4 @@
+MDEV_CONF="/etc/mdev.conf"
+
+MDEV_LOGGING=yes
+MODULE_DISABLED=yes

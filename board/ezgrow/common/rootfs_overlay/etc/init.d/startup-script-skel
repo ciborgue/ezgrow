@@ -1,0 +1,16 @@
+#!/bin/sh
+
+. /etc/init.d/project-shell-functions
+
+NAME=$(get_script_name $0)
+load_defaults $NAME
+
+case "$1" in
+	start|stop|status|restart)
+		eval $(echo \$PRE_$1)
+		$1
+		eval $(echo \$POST_$1)
+	;;
+	*)
+		usage
+esac

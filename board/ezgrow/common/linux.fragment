@@ -1,0 +1,151 @@
+# required: we use squashfs/xz for rootfs; no need for LZO/GZIP
+CONFIG_SQUASHFS=y
+CONFIG_SQUASHFS_ZLIB=n
+CONFIG_SQUASHFS_LZO=n
+CONFIG_SQUASHFS_XZ=y
+CONFIG_SQUASHFS_FILE_DIRECT=y
+
+# don't use non-free drivers for RTL
+#CONFIG_RTL8192CU=n
+# use 'new' driver for 8192
+CONFIG_RTL_CARDS=n
+
+# required: both are used for sure; no point to use modules
+# scripts won't load it so it should be set to '=y', not '=m'
+CONFIG_SPI_SPIDEV=y
+CONFIG_I2C_CHARDEV=y
+
+# optional: this makes it slightly more reliable
+# use module for the watchdog device
+#CONFIG_WATCHDOG_NOWAYOUT=y
+CONFIG_WATCHDOG_SYSFS=y
+CONFIG_BCM2835_WDT=m
+
+# optional: do I really need USB 2.0?
+#CONFIG_USB_OHCI_HCD=m
+#CONFIG_USB_EHCI_HCD=m
+
+# optional: save some space
+CONFIG_CC_OPTIMIZE_FOR_SIZE=y
+
+# optional: keep compression out except XZ
+CONFIG_RD_GZIP=n
+CONFIG_RD_BZIP2=n
+CONFIG_RD_LZMA=n
+CONFIG_RD_LZO=n
+CONFIG_RD_LZ4=n
+CONFIG_RD_XZ=n
+
+CONFIG_CC_STACKPROTECTOR_REGULAR=y
+
+########## support for the remote controls
+CONFIG_MEDIA_SUPPORT=y
+CONFIG_MEDIA_RC_SUPPORT=y
+
+# I don't need DVB tuners
+CONFIG_DVB_TUNER_DIB0070=n
+CONFIG_DVB_TUNER_DIB0090=n
+
+# required for blasting
+CONFIG_LIRC=m
+CONFIG_IR_LIRC_CODEC=m
+
+# decoders can be modules
+CONFIG_IR_NEC_DECODER=m
+CONFIG_IR_RC5_DECODER=m
+CONFIG_IR_RC6_DECODER=m
+CONFIG_IR_JVC_DECODER=m
+CONFIG_IR_SONY_DECODER=m
+CONFIG_IR_SANYO_DECODER=m
+CONFIG_IR_SHARP_DECODER=m
+CONFIG_IR_MCE_KBD_DECODER=m
+CONFIG_IR_XMP_DECODER=m
+
+# receivers: enable all
+CONFIG_RC_ATI_REMOTE=m
+CONFIG_IR_HIX5HD2=m
+CONFIG_IR_IMON=m
+CONFIG_IR_MCEUSB=m
+CONFIG_IR_REDRAT3=m
+CONFIG_IR_STREAMZAP=m
+CONFIG_IR_IGORPLUGUSB=m
+CONFIG_IR_IGUANA=m
+CONFIG_IR_TTUSBIR=m
+CONFIG_IR_GPIO_CIR=m
+
+# https://www.adafruit.com/product/1722 (adds $55 to the damage; discontinued)
+# https://www.kickstarter.com/projects/publiclab/infragram-the-infrared-photography-project
+
+########## below are cosmetics; features not needed
+########## and can be safely commented out if you want to
+
+# we don't use IPv6, PNP, L2TP, ATM, ATALK, IEEE802154, OPENVSWITCH, NET_PKTGEN
+# TODO: more cleanup of unneeded features; all we need is basic IPv4
+CONFIG_1W=n
+CONFIG_IPV6=n
+CONFIG_PNP=n
+CONFIG_L2TP=n
+CONFIG_IRDA=n
+CONFIG_ATM=n
+CONFIG_ATALK=n
+CONFIG_IEEE802154=n
+CONFIG_OPENVSWITCH=n
+CONFIG_NET_PKTGEN=n
+CONFIG_NET_SCHED=n
+CONFIG_BATMAN_ADV=n
+
+# ramdisk uses xz; not sure if ramdisk should be enabled
+#CONFIG_RD_XZ=n
+
+CONFIG_SOUND=n
+
+# RAID/LVM; this is never needed for RPi
+CONFIG_MD=n
+
+# experimental drivers
+CONFIG_STAGING=n
+
+# profiling and compressed swap aren't used
+CONFIG_PROFILING=n
+CONFIG_ZSMALLOC=n
+
+# Devices that RPi will never use
+CONFIG_WIMAX=n
+CONFIG_NET_9P=n
+CONFIG_NFC=n
+CONFIG_HAMRADIO=n
+CONFIG_CAN=n
+CONFIG_IIO=n
+
+# network devices
+CONFIG_BLK_DEV_DRBD=n
+CONFIG_BLK_DEV_NBD=n
+
+# filesystem zoo: disable 'em all
+CONFIG_REISERFS_FS=n
+CONFIG_JFS_FS=n
+CONFIG_JFFS2_FS=n
+CONFIG_XFS_FS=n
+CONFIG_GFS2_FS=n
+CONFIG_OCFS2_FS=n
+CONFIG_BTRFS_FS=n
+CONFIG_NILFS2_FS=n
+CONFIG_F2FS_FS=n
+CONFIG_ISO9660_FS=n
+CONFIG_UDF_FS=n
+CONFIG_NTFS_FS=n
+CONFIG_ECRYPT_FS=n
+CONFIG_HFS_FS=n
+CONFIG_HFSPLUS_FS=n
+CONFIG_UBIFS_FS=n
+CONFIG_FUSE_FS=n
+CONFIG_OVERLAY_FS=n
+CONFIG_AUTOFS4_FS=n
+CONFIG_PRINT_QUOTA_WARNING=n
+
+# distributed lock manager
+CONFIG_DLM=n
+
+# NFS is disabled, both client and server
+CONFIG_NFS_FS=n
+CONFIG_NFSD_FS=n
