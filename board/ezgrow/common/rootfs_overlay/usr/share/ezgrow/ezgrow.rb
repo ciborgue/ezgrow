@@ -64,7 +64,7 @@ class Main
 	DEFAULT_CONFIG	= '/etc/ezgrow/ezgrow.conf'
 
 	TOLERANCE		= 180	# max. reading age
-	INTERVAL		= 20	# default wakeup interval
+	INTERVAL		= 10
 
 	# these are the names of the outlets; you can use your own
 	#	(but there's a little point doing so)
@@ -90,6 +90,14 @@ class Main
 	def initialize
 		@interval = INTERVAL
 		@prefs = Hash.new
+		@updates = [
+			method(:updatePduData),
+			method(:updateFiveVolt),
+			method(:updateWaterPump),
+			method(:updateGrowLamp),
+			method(:updateExhaustFan),
+			method(:updateAirConditioner),
+		]
 	end
 	def loadJson(jsonName)
 		return Hash.new unless File.exists? jsonName
@@ -182,37 +190,40 @@ EOF
 	# ideally, this should also set watchdog timeout to a few minutes via
 	# the IOCTL call; this is in my TODO list
 	def updateWatchdog
+		debugLog "========= updateWatchdog"
 		File.open(@prefs['path']['watchdog'], 'w') { |watchdog|
 			watchdog.print 'DEADBEEF'
 		}
 	end
 	def outletGet name
-		debugLog "outletGet: #{name}"
 		outlets = @history[@timestamp]['sensor'][SWITCHEDPDU]['outlet']
 		index = outlets['name'].index name
 		raise RuntimeError, "PDU: No outlet '#{name}'" \
 			if index == nil
+		debugLog "====== outletGet: #{name} is #{outlets['status'][index]}"
 		outlets['status'][index]
 	end
 	def outletSet name, state
-		debugLog "outletSet: #{name}, #{state}"
 		if state == outletGet(name)
-			debugLog "outletSet: outlet #{name}: is already #{state}"
+			debugLog "====== outletSet: outlet #{name} is already #{state}"
 		else
-			debugLog "outletSet: outlet #{name}: switching to #{state}"
+			debugLog "====== outletSet: outlet #{name} switching to #{state}"
 			system @prefs[SWITCHEDPDU]['exec'] +
 				" --name '#{name}'" +
 				" --addr #{@prefs[SWITCHEDPDU]['addr']}" +
 				" --json #{@prefs[SWITCHEDPDU]['json']}" +
 				" --cmnd #{state}"
-			# now reload JSON because the VA reading might have changed
-			@history[@timestamp]['sensor'][SWITCHEDPDU] = loadPduData
+			# Don't reload JSON; it takes some time to switch outlet so
+			# just wait until the next cycle. It's not 100% accurate but
+			# it's acceptable to me.
 		end
 		state
 	end
 	def updateGrowLamp
 		### no need for dynamic cycle update; it's really 12/12 or 6/18
 		###		(but you can permanently adjust it to 4/20 or even 0/24)
+		debugLog ">>> updateGrowLamp: in"
+
 		stage = @state['stage']
 		cycle = @prefs['light'][stage]['cycle']
 		debugLog "Light cycle selected: #{cycle}/#{24 - cycle}hr for #{stage}"
@@ -226,23 +237,10 @@ EOF
 
 		lamp = ((@timestamp > peak - cycle * 1800) and
 			(@timestamp < peak + cycle * 1800)) ? 'off' : 'on'
-		debugLog "Lamp should be: #{lamp}; calling outletSet"
 
 		outletSet GROWLAMP, lamp
-	end
-	def updateExhaustFan lamp
-		value = 'on' # turn ON if sensor is disabled/unavaliable
-		if @prefs['sensor'].has_key? GROWZONETEMP \
-			and not @prefs['sensor'][GROWZONETEMP]['disabled']
-			sensorData = loadSensorData GROWZONETEMP
-			limit = @prefs['temperature']['light'][lamp]['FAN']
-			if sensorData['temperature'] > limit['on']
-				value = 'on'
-			elsif sensorData['temperature'] < limit['off']
-				value = 'off'
-			end
-		end
-		outletSet EXHAUSTFAN, value
+
+		debugLog "<<< updateGrowLamp: out [#{lamp}]"
 	end
 	def loadSensorData name
 		raise RuntimeError, "Unknown sensor: #{name}" \
@@ -275,7 +273,7 @@ EOF
 		}
 
 		return nil unless sensor['required']
-		raise RuntimeError, "Essential sensor has no regex: #{name}" \
+		raise RuntimeError, "Essential sensor has no regex: #{name}"
 	end
 	def calculateAcMode degc, mode, limit
 		if degc > limit['COOL']['on']
@@ -300,7 +298,10 @@ EOF
 		end
 		mode
 	end
-	def updateAirConditioner lamp
+	def updateAirConditioner
+		lamp = outletGet GROWLAMP
+		debugLog ">>> updateAirConditioner: in, lamp is: #{lamp}"
+
 		mode,limit = @state['AC']['mode'],@prefs['temperature']['light'][lamp]
 
 		# use IndoorTemperature if avail.; use GrowZoneTemperature as a backup
@@ -336,15 +337,38 @@ EOF
 			$stderr.puts @prefs['AC'][mode] % 2 # FAN=2
 		end
 
-		mode
+		debugLog "<<< updateAirConditioner: out [#{mode}]"
+	end
+	def updateExhaustFan
+		lamp = outletGet GROWLAMP
+		debugLog ">>> updateExhaustFan: in, lamp is #{lamp}"
+		value = 'on' # turn ON if sensor is disabled/unavaliable
+		if @prefs['sensor'].has_key? GROWZONETEMP \
+			and not @prefs['sensor'][GROWZONETEMP]['disabled']
+			sensorData = loadSensorData GROWZONETEMP
+			limit = @prefs['temperature']['light'][lamp]['FAN']
+			debugLog "updateExhaustFan: got temperature" +
+				" [#{sensorData['temperature']}]" +
+				" vs #{limit['on']} .. #{limit['off']}"
+			if sensorData['temperature'] > limit['on']
+				value = 'on'
+			elsif sensorData['temperature'] < limit['off']
+				value = 'off'
+			end
+		end
+		outletSet EXHAUSTFAN, value
+		debugLog "<<< updateExhaustFan: out [#{value}]"
 	end
 	def updateWaterPump
 		# turn OFF if sensor is disabled/unavaliable; this can be dangerous
+		debugLog ">>> updateWaterPump: in"
 		value = 'off'
 		sensorConf = @prefs['sensor'][WATERSENSOR]
 		while sensorConf != nil and not sensorConf['disabled']
 			break if (sensorData = loadSensorData WATERSENSOR) == nil
 			voltage = sensorData[sensorConf['use']]['voltage']
+			debugLog "updateWaterPump: got voltage [#{voltage}]" +
+				" vs #{@prefs['voltage'][WATERSENSOR]['voltage']}"
 			unless voltage < @prefs['voltage'][WATERSENSOR]['voltage']
 				value = 'on'
 				break
@@ -353,79 +377,75 @@ EOF
 			break
 		end
 		outletSet WATERPUMP, value
+		debugLog "<<< updateWaterPump: out [#{value}]"
 	end
-	def checkFiveVolt
-		# don't do anything; just send an email if 5V is not really 5.0
+	def updateFiveVolt
+		# don't do anything; just send an email if 5V is not really 5.00
+		debugLog ">>> updateFiveVolt: in"
+		value = nil
 		sensorConf = @prefs['sensor'][FIVEVOLT]
 		while sensorConf != nil and not sensorConf['disabled']
 			break if (sensorData = loadSensorData FIVEVOLT) == nil
-			voltage = sensorData[sensorConf['use']]['voltage']
-			break unless voltage < @prefs['voltage'][FIVEVOLT]['voltage']
-			emailNotify "Supply voltage is low: #{voltage}v"
+			value = sensorData[sensorConf['use']]['voltage']
+			break unless value < @prefs['voltage'][FIVEVOLT]['voltage']
+			emailNotify "Supply voltage is low: #{value}V"
 			break
 		end
+		debugLog "<<< updateFiveVolt: out [#{value}]"
 	end
-	def loadPduData
+	def updatePduData
 		# asks PDU control script to retrieve status of the unit and write JSON
 		#	'slow' is a debug speed hack; should be ignored by the real script
+		debugLog ">>> updatePduData: in"
 		pdu = @prefs[SWITCHEDPDU]
 		status = system pdu['exec'] +
 			' --addr ' + pdu['addr'] +
 			' --json ' + pdu['json'] +
-			' --cmnd status'
+			' --cmnd status' +
+			' --slow'
 		raise RuntimeError, "Can't retrieve PDU status" \
 			if not status or ! File.exists? pdu['json']
-		loadJson pdu['json']
+
+		@history[@timestamp]['sensor'][SWITCHEDPDU] =
+			json = loadJson pdu['json']
+
+		debugLog "<<< updatePduData: out; #{json['Amp']} amp"
 	end
 	def operate timestamp
 		@timestamp = timestamp
+		updateWatchdog
 
-		@state = { # this is the bootstrap state; ground zero
+		debugLog "==============================================="
+		debugLog "========== #{@timestamp} =========="
+
+
+		@state = {	# this is the bootstrap state
 			'stage' => 'grow',
 			'AC' => { 'mode' => 'OFF' }
 		} if (@state = State.load @prefs).empty?
 
-		#@history = History.load @prefs
-		#@history[@timestamp] = { 'sensor' => Hash.new } \
-		#	unless @history.has_key? @timestamp
 		@history[@timestamp] = {
 			'sensor' => Hash.new
 		} unless (@history = History.load @prefs).has_key? @timestamp
 
-		sensors = @history[@timestamp]['sensor'] # syntax shortcut
-		sensors[SWITCHEDPDU] = loadPduData
+		@updates.each { |method|
+			method.call
+			updateWatchdog
+		}
 
-		# check if 5V is OK and stable
-		checkFiveVolt
-
-		# Check water pump; shutdown if water detected
-		updateWaterPump
-
-		# Set grow lamp ON/OFF; it depends on these:
-		# 1. Current time
-		# 2. Selected cycle ('grow' or 'bloom') and configured duration
-		# 3. Selected or computed temperature maximum (mine is 18:30:00)
-		lamp = updateGrowLamp
-
-		# Set exhaust fan; it depends on these:
-		# 1. Grow zone temperature
-		exhaustFan = updateExhaustFan lamp
-
-		# Turn AC ON/OFF (and VENT/COOL); AC is controlled via lirc, not
-		#	by switching outlet. AC depend on all available
-		#	temp sensors; 'name' is the remote name, not outlet name
-		airConditioner = updateAirConditioner lamp
+		@history[@timestamp]['runtime'] = Time.new - @timestamp
 
 		if @history.length >= @prefs['settings']['save-history-every']
 			History.dump @prefs, @timestamp, @history
 		else
 			History.save @prefs, @history
 		end
+
 		State.save @prefs, @state
 
 		updateWatchdog
 
-		@history[@timestamp]['runtime'] = Time.new - @timestamp
+		@history[@timestamp]['runtime']
 	end
 end
 
@@ -433,12 +453,23 @@ Syslog::Logger.new 'ezgrow::main' # mark syslog records
 
 begin
 	app = Main.new
+
 	commandLine = app.parseCommandLine GetoptLong.new(
 		[ '--config', '-c', GetoptLong::REQUIRED_ARGUMENT ],
 	)
+
+	Tempfile.open('prefs.') { |f|
+		f.puts JSON.pretty_generate app.prefs
+		f.fsync
+		File.rename f.path, '/tmp/prefs.dump.json'
+	}
+	
 	while true
-		runtime = app.operate Time.new
-		sleep app.interval - runtime
+		seconds = app.interval - Time.new.sec % app.interval
+		sleep seconds
+
+		seconds = app.operate Time.new
+		app.debugLog "Finished in: #{'%.2f' % seconds}s"
 	end
 rescue => e
 	app.emailNotify e

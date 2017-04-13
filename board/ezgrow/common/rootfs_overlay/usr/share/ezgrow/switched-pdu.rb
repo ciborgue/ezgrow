@@ -2,12 +2,13 @@
 
 require 'time'
 require 'json'
+require 'syslog/logger'
 require 'tempfile'
 require 'getoptlong'
 
 class SwitchedPDU
+	MAXAGE = 15 * 60 # 15 minutes
 	OUTLET_COUNT = 8
-	PDU_VALID_COMMANDS = [ 'on', 'off' ]
 	PDU_MODEL = {
 		'APC' => {
 			'offset' => 1, # outlet #1 is at rPDUOutletStatusOutletState.1
@@ -25,8 +26,8 @@ class SwitchedPDU
 				'cyclePending' => 'outletRebootWithDelay',
 			},
 			'value' => {
-                'on' => 'outletOn',
-                'off' => 'outletOff',
+		                'on' => 'outletOn',
+		                'off' => 'outletOff',
 			},
 		},
 		'Dataprobe' => {
@@ -36,28 +37,34 @@ class SwitchedPDU
 			'status' => 'IBOOTBAR-MIB::outletStatus',
 			'command' => 'IBOOTBAR-MIB::outletCommand',
 			'state' => { # from the MIB
-                'on' => 'on',
-                'off' => 'off',
-                'reboot' => 'reboot',
-                'cycle' => 'cycle',
-                'onPending' => 'onPending',
-                'cyclePending' => 'cyclePending',
+		                'on' => 'on',
+		                'off' => 'off',
+		                'reboot' => 'reboot',
+		                'cycle' => 'cycle',
+		                'onPending' => 'onPending',
+		                'cyclePending' => 'cyclePending',
 			},
 			'value' => {
-                'on' => 'on',
-                'off' => 'off',
+		                'on' => 'on',
+		                'off' => 'off',
 			},
 		},
 	}
-	def initialize
-		@conf=Hash.new
+	def initialize timestamp
+		@timestamp = timestamp
+		@conf = Hash.new
+	end
+	def debugLog text
+		text.each_line { |line|
+			Syslog::debug line.chomp
+		}
 	end
 	def collectPowerFromSNMP data
-		data['timestamp'] = Time.new
+		debugLog 'entry: collectPowerFromSNMP'
 		target = PDU_MODEL[data['maker']]['power']
 		`snmpwalk #{@conf['addr']} #{target} 2> /dev/null`.each_line { |line|
 			if data['maker'] == 'APC'
-				# data from the multimeter; idk why APC uses 125 volt
+				# compared to data from the multimeter; idk why APC uses 125V
 				data['Amp'] = (line.chomp.split[1].to_f - 2.0) / 125.0
 			elsif data['maker'] == 'Dataprobe'
 				data['Amp'] = line.chomp.split[1].to_f / 10.0
@@ -65,11 +72,11 @@ class SwitchedPDU
 				raise RuntimeError, "Unsupported PDU [internal error]"
 			end
 		}
-		raise RuntimeError, "Can't get totalPower; aborting" \
+		raise RuntimeError, "Can't get power consumption; aborting" \
 			unless data.has_key? 'Amp'
-		data
 	end
 	def collectNameFromSNMP data
+		debugLog 'entry: collectNameFromSNMP'
 		# internally all the outlets are kept in zero-based array, i.e.
 		# outlet #1 is name[0]; use the offset to find the correct spot
 		data['outlet']['name'] = value = Array.new
@@ -82,9 +89,9 @@ class SwitchedPDU
 			break if index == OUTLET_COUNT
 			value[index] = name
 		}
-		data
 	end
 	def collectStatusFromSNMP data
+		debugLog 'entry: collectStatusFromSNMP'
 		data['outlet']['status'] = value = Array.new
 		target = PDU_MODEL[data['maker']]['status']
 		`snmpwalk #{@conf['addr']} #{target} 2> /dev/null`.each_line { |line|
@@ -98,11 +105,11 @@ class SwitchedPDU
 			raise RuntimeError, "Unknown outlet status #{line[1]}" \
 				if value[index] == nil
 		}
-		data
 	end
 	def collectFromSNMP
-		#$stderr.puts "Reloading SNMP status ..."
+		debugLog  'entry: collectFromSNMP'
 		data = {
+			'timestamp' => @timestamp,
 			'outlet' => {}, # data container
 		}
 		`snmpget #{@conf['addr']} sysObjectID.0 2> /dev/null`.each_line { |line|
@@ -123,10 +130,8 @@ class SwitchedPDU
 		data
 	end
 	def snmpExecuteCommand data, zeroIndx, userCmnd
-		return if ! @conf.has_key?('slow') \
+		return userCmnd if ! @conf.has_key?('slow') \
 			and data['outlet']['status'][zeroIndx] == userCmnd
-
-		data.delete 'timestamp' # mark data as invalid
 
 		zeroIndx += PDU_MODEL[data['maker']]['offset']
 		target = PDU_MODEL[data['maker']]['command']
@@ -135,58 +140,61 @@ class SwitchedPDU
 		system "snmpset #{@conf['addr']} #{target}.#{zeroIndx}" +
 			" = #{value} > /dev/null 2> /dev/null"
 
-		sleep 8 # give it some time to switch and get the correct Volt-Amp
+		data['outlet']['status'][zeroIndx] = userCmnd
 	end
-	def run(opts)
+	def run opts
 		opts.each { |key,value| @conf[key.sub(/^--/,'')] = value }
-		[ 'addr', 'json', 'cmnd' ].each { |arg|
-			raise "No #{arg} is provided; aborting" unless @conf.has_key? arg
+		[ 'addr', 'json', 'cmnd' ].each { |requiredArg|
+			raise "No #{requiredArg} is provided; aborting" \
+				unless @conf.has_key? requiredArg
 		}
-		data = nil
+
+		data = { 'timestamp' => Time.at(0) } # trigger reload
+		if ! @conf.has_key?('slow') and File.file?(@conf['json'])
+			File.open(@conf['json']) { |f|
+				data = JSON.parse f.read
+			}
+			data['timestamp'] = Time.parse data['timestamp']
+		end
+
+		# reload data if it is too old
+		data = collectFromSNMP if (@timestamp - data['timestamp']) > MAXAGE
+
 		@conf['cmnd'] = @conf['cmnd'].downcase
 		case @conf['cmnd']
-			when 'on', 'off', 'cycle'
-				if @conf.has_key? 'slow' or ! File.exists? @conf['json']
-					data = collectFromSNMP
-				else
-					File.open(@conf['json']) { |f|
-						data = JSON.parse f.read
-					}
-				end
-				indx = nil
+			when 'on', 'off'
+				indx,outlet = nil,data['outlet']
 				if @conf.has_key? 'indx'
+					# we're zero-based, command line is one-based
 					indx = @conf['indx'].to_i - 1
 				elsif @conf.has_key? 'name'
-					indx = data['outlet']['name'].index @conf['name']
+					# see if there's an outlet by this name
+					indx = outlet['name'].index @conf['name']
 				else
 					raise RuntimeError, "No 'name' or 'indx' provided"
 				end
-				raise RuntimeError, "Outlet does not exist" \
-					if indx == nil || data['outlet']['status'][indx] == nil
 
-				snmpExecuteCommand data, indx, @conf['cmnd']
+				raise RuntimeError, 'Outlet does not exist' \
+					if indx == nil or indx >= OUTLET_COUNT
+
+				# don't update amps here; delay it until next status
+				snmpExecuteCommand data, indx, @conf['cmnd'] \
+					if outlet['status'][indx] != @conf['cmnd']
 			when 'status'
-				# do nothing here; possibly collect status later
+				# do nothing; status will be saved later anyway
 			else
 				raise RuntimeError, "Unknown command: [#{@conf['cmnd']}]"
 		end
 
-		# Update data only if change was made or requested to do so with 'slow'
-		# or command is 'status'
-		data = collectFromSNMP \
-			if @conf['cmnd'] == 'status' or @conf.has_key? 'slow' or
-				! data.has_key? 'timestamp'
-
-		# Always update timestamp, regardless of actual data retrieval
-		data['timestamp'] = Time.new
-
 		Tempfile.open { |f|
-			f.puts JSON.generate data
+			f.puts JSON.pretty_generate data
 			f.fsync
 			File.rename f.path, @conf['json']
 		}
 	end
 end
+
+Syslog::Logger.new 'switched-pdu' # mark syslog records
 
 opts = GetoptLong.new(
 	[ '--json', '-j', GetoptLong::REQUIRED_ARGUMENT ],
@@ -195,8 +203,8 @@ opts = GetoptLong.new(
 	[ '--cmnd', '-c', GetoptLong::REQUIRED_ARGUMENT ],
 	[ '--addr', '-a', GetoptLong::REQUIRED_ARGUMENT ],
 	[ '--slow', '-s', GetoptLong::NO_ARGUMENT ],
-	# '--slow': 1. Don't use JSON file as source, always get fresh SNMP data
-	# 			2. Always send the command, even if there is no change present
+	# slow:	1. Don't use JSON file as source, always get fresh SNMP data
+	#	2. Always send the command, even if there is no change present
 )
 
-SwitchedPDU.new.run opts
+SwitchedPDU.new(Time.new).run opts
