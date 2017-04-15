@@ -1,10 +1,13 @@
 #!/usr/bin/ruby
 
+require 'snmp'
 require 'time'
 require 'json'
 require 'syslog/logger'
 require 'tempfile'
 require 'getoptlong'
+
+include SNMP
 
 class SwitchedPDU
 	MAXAGE = 15 * 60 # 15 minutes
@@ -29,6 +32,10 @@ class SwitchedPDU
 		                'on' => 'outletOn',
 		                'off' => 'outletOff',
 			},
+			'numeric' => {
+				0 => 'off',
+				1 => 'on',
+			},
 		},
 		'Dataprobe' => {
 			'offset' => 0, # outlet #1 is at outletStatus.0
@@ -48,62 +55,90 @@ class SwitchedPDU
 		                'on' => 'on',
 		                'off' => 'off',
 			},
+			'numeric' => {
+				0 => 'off',
+				1 => 'on',
+			},
 		},
 	}
 	def initialize timestamp
 		@timestamp = timestamp
 		@conf = Hash.new
+		PDU_MODEL.each_key { |maker|
+			PDU_MODEL[maker]['numeric'].default = 'unknown'
+		}
 	end
 	def debugLog text
 		text.each_line { |line|
 			Syslog::debug line.chomp
 		}
 	end
+	def snmpGet oid
+                target = {
+                        :version => :SNMPv1,
+                        :community => @conf['--pass'],
+                        :host => @conf['--addr'],
+                }
+		mibObject = MIB.new
+		mibObject.load_module oid.sub(/::.*/, '')
+                reading = ObjectId.new(mibObject.oid(oid))
+                Manager.open(target) { |manager|
+                        response = manager.get(reading)
+                        varbind = response.varbind_list.first
+			return varbind.value
+                }
+		nil
+	end
+	def snmpSet oid, value
+                target = {
+                        :version => :SNMPv1,
+                        :community => @conf['--pass'],
+                        :host => @conf['--addr'],
+                }
+		mibObject = MIB.new
+		mibObject.load_module oid.sub(/::.*/, '')
+                reading = ObjectId.new(mibObject.oid(oid))
+		varbind = VarBind.new(reading, SNMP::Integer.new(value))
+                Manager.open(target) { |manager|
+                        manager.set varbind
+                }
+	end
 	def collectPowerFromSNMP data
 		debugLog 'entry: collectPowerFromSNMP'
-		target = PDU_MODEL[data['maker']]['power']
-		`snmpwalk #{@conf['addr']} #{target} 2> /dev/null`.each_line { |line|
-			if data['maker'] == 'APC'
-				# compared to data from the multimeter; idk why APC uses 125V
-				data['Amp'] = (line.chomp.split[1].to_f - 2.0) / 125.0
-			elsif data['maker'] == 'Dataprobe'
-				data['Amp'] = line.chomp.split[1].to_f / 10.0
-			else
-				raise RuntimeError, "Unsupported PDU [internal error]"
-			end
-		}
-		raise RuntimeError, "Can't get power consumption; aborting" \
-			unless data.has_key? 'Amp'
+		reading = snmpGet PDU_MODEL[data['maker']]['power']
+		raise "Wrong variable type" \
+			unless reading.class.to_s == 'SNMP::Integer'
+		if data['maker'] == 'APC'
+			# compared to data from the multimeter; idk why APC uses 125V
+			data['Amp'] = (reading.to_f - 2.0) / 125.0
+		elsif data['maker'] == 'Dataprobe'
+			data['Amp'] = reading.to_f / 10.0
+		else
+			raise RuntimeError, "Unsupported PDU [internal error]"
+		end
 	end
 	def collectNameFromSNMP data
 		debugLog 'entry: collectNameFromSNMP'
 		# internally all the outlets are kept in zero-based array, i.e.
 		# outlet #1 is name[0]; use the offset to find the correct spot
 		data['outlet']['name'] = value = Array.new
-		target = PDU_MODEL[data['maker']]['name']
-		`snmpwalk #{@conf['addr']} #{target} 2> /dev/null`.each_line { |line|
-			line = line.chomp.split(/[[:space:]]+/, 2)
-			line[0] = line[0].split /\./
-			index = line[0][-1].to_i - PDU_MODEL[data['maker']]['offset']
-			name = line[1].sub(/^"/,'').sub(/"$/,'')
-			break if index == OUTLET_COUNT
-			value[index] = name
+		(0...OUTLET_COUNT).each { |index|
+			reading = snmpGet PDU_MODEL[data['maker']]['name'] +
+				".#{index + PDU_MODEL[data['maker']]['offset']}"
+			raise "Wrong variable type" \
+				unless reading.class.to_s == 'SNMP::OctetString'
+			value[index] = reading.to_s
 		}
 	end
 	def collectStatusFromSNMP data
 		debugLog 'entry: collectStatusFromSNMP'
 		data['outlet']['status'] = value = Array.new
-		target = PDU_MODEL[data['maker']]['status']
-		`snmpwalk #{@conf['addr']} #{target} 2> /dev/null`.each_line { |line|
-			line = line.chomp.split(/[[:space:]]+/, 2)
-			line[0] = line[0].split /\./
-			index = line[0][-1].to_i - PDU_MODEL[data['maker']]['offset']
-			break if index == OUTLET_COUNT
-			PDU_MODEL[data['maker']]['state'].each { |k,v|
-				value[index] = k if v == line[1]
-			}
-			raise RuntimeError, "Unknown outlet status #{line[1]}" \
-				if value[index] == nil
+		(0...OUTLET_COUNT).each { |index|
+			reading = snmpGet PDU_MODEL[data['maker']]['status'] +
+				".#{index + PDU_MODEL[data['maker']]['offset']}"
+			raise "Wrong variable type" \
+				unless reading.class.to_s == 'SNMP::Integer'
+			value[index] = PDU_MODEL[data['maker']]['numeric'][reading.to_i]
 		}
 	end
 	def collectFromSNMP
@@ -112,18 +147,18 @@ class SwitchedPDU
 			'timestamp' => @timestamp,
 			'outlet' => {}, # data container
 		}
-		`snmpget #{@conf['addr']} sysObjectID.0 2> /dev/null`.each_line { |line|
-			line = line.chomp.split
-			raise RuntimeError, "Bad SNMP response; aborting" \
-				unless line[0] == 'SNMPv2-MIB::sysObjectID.0'
-			if line[1] == 'IBOOTBAR-MIB::iBootBarAgent'
-				data['maker'] = 'Dataprobe'
-			elsif line[1] == 'PowerNet-MIB::masterSwitchrPDU'
-				data['maker'] = 'APC'
-			else
-				raise RuntimeError, "Unsupported PDU: #{line[1]}"
-			end
-		}
+		sysObjectID = snmpGet('SNMPv2-MIB::sysObjectID.0').to_s
+		raise RuntimeError, "Bad SNMP response; aborting" \
+			if sysObjectID == nil
+		if sysObjectID == 'IBOOTBAR-MIB::iBootBarAgent' or
+			sysObjectID == 'SNMPv2-SMI::enterprises.1418.4'
+			data['maker'] = 'Dataprobe'
+		elsif sysObjectID == 'PowerNet-MIB::masterSwitchrPDU' or
+			sysObjectID == 'SNMPv2-SMI::enterprises.318.1.3.4.5'
+			data['maker'] = 'APC'
+		else
+			raise RuntimeError, "Unsupported PDU: #{sysObjectID}"
+		end
 		collectPowerFromSNMP data # order is used as a delay; don't change
 		collectNameFromSNMP data
 		collectStatusFromSNMP data
@@ -135,23 +170,48 @@ class SwitchedPDU
 
 		zeroIndx += PDU_MODEL[data['maker']]['offset']
 		target = PDU_MODEL[data['maker']]['command']
-		value = PDU_MODEL[data['maker']]['value'][userCmnd]
-		
-		system "snmpset #{@conf['addr']} #{target}.#{zeroIndx}" +
-			" = #{value} > /dev/null 2> /dev/null"
+
+		value = 0
+		PDU_MODEL[data['maker']]['numeric'].each { |k,v|
+			if v.eql? userCmnd
+				value = k
+				break
+			end
+		}
+
+		snmpSet "#{target}.#{zeroIndx}", value
 
 		data['outlet']['status'][zeroIndx] = userCmnd
 	end
-	def run opts
-		opts.each { |key,value| @conf[key.sub(/^--/,'')] = value }
-		[ 'addr', 'json', 'cmnd' ].each { |requiredArg|
+	def getDefaultPass list
+		list.each { |f|
+			next unless File.file? f
+			File.open(f).each_line { |line|
+				line = line.chomp.split
+				if line[0].eql? 'includeFile'
+					list.push line[1] \
+						unless list.include? line[1]
+				elsif line[0].eql? 'defCommunity'
+					return line[1]
+				end
+			}
+		}
+		'public' # nothing found, use 'public'
+	end
+	def run conf
+		@conf = conf
+
+		[ '--addr', '--json', '--cmnd' ].each { |requiredArg|
 			raise "No #{requiredArg} is provided; aborting" \
 				unless @conf.has_key? requiredArg
 		}
 
+		@conf['--pass'] = getDefaultPass [ '/etc/snmp/snmp.conf' ] \
+			unless @conf.has_key? '--pass'
+
 		data = { 'timestamp' => Time.at(0) } # trigger reload
-		if ! @conf.has_key?('slow') and File.file?(@conf['json'])
-			File.open(@conf['json']) { |f|
+		if ! @conf.has_key?('--slow') and File.file?(@conf['--json'])
+			File.open(@conf['--json']) { |f|
 				data = JSON.parse f.read
 			}
 			data['timestamp'] = Time.parse data['timestamp']
@@ -160,16 +220,16 @@ class SwitchedPDU
 		# reload data if it is too old
 		data = collectFromSNMP if (@timestamp - data['timestamp']) > MAXAGE
 
-		@conf['cmnd'] = @conf['cmnd'].downcase
+		@conf['cmnd'] = @conf['--cmnd'].downcase
 		case @conf['cmnd']
 			when 'on', 'off'
 				indx,outlet = nil,data['outlet']
-				if @conf.has_key? 'indx'
+				if @conf.has_key? '--indx'
 					# we're zero-based, command line is one-based
-					indx = @conf['indx'].to_i - 1
-				elsif @conf.has_key? 'name'
+					indx = @conf['--indx'].to_i - 1
+				elsif @conf.has_key? '--name'
 					# see if there's an outlet by this name
-					indx = outlet['name'].index @conf['name']
+					indx = outlet['name'].index @conf['--name']
 				else
 					raise RuntimeError, "No 'name' or 'indx' provided"
 				end
@@ -178,18 +238,18 @@ class SwitchedPDU
 					if indx == nil or indx >= OUTLET_COUNT
 
 				# don't update amps here; delay it until next status
-				snmpExecuteCommand data, indx, @conf['cmnd'] \
-					if outlet['status'][indx] != @conf['cmnd']
+				snmpExecuteCommand data, indx, @conf['--cmnd'] \
+					if outlet['status'][indx] != @conf['--cmnd']
 			when 'status'
 				# do nothing; status will be saved later anyway
 			else
-				raise RuntimeError, "Unknown command: [#{@conf['cmnd']}]"
+				raise RuntimeError, "Unknown command: [#{@conf['--cmnd']}]"
 		end
 
-		Tempfile.open { |f|
+		Tempfile.open('switched-pdu.', File.dirname(@conf['--json'])) { |f|
 			f.puts JSON.pretty_generate data
 			f.fsync
-			File.rename f.path, @conf['json']
+			File.rename f.path, @conf['--json']
 		}
 	end
 end
@@ -202,9 +262,12 @@ opts = GetoptLong.new(
 	[ '--indx', '-i', GetoptLong::REQUIRED_ARGUMENT ], # 'natural' index: 1, 2
 	[ '--cmnd', '-c', GetoptLong::REQUIRED_ARGUMENT ],
 	[ '--addr', '-a', GetoptLong::REQUIRED_ARGUMENT ],
+	[ '--pass', '-p', GetoptLong::REQUIRED_ARGUMENT ], # SNMP community (password)
 	[ '--slow', '-s', GetoptLong::NO_ARGUMENT ],
 	# slow:	1. Don't use JSON file as source, always get fresh SNMP data
 	#	2. Always send the command, even if there is no change present
 )
+args = Hash.new
+opts.each { |key,value| args[key] = value }
 
-SwitchedPDU.new(Time.new).run opts
+SwitchedPDU.new(Time.new).run args

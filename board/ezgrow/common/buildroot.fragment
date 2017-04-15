@@ -34,6 +34,9 @@ BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_EUDEV=y
 # optimize everything for size
 BR2_OPTIMIZE_S=y
 
+# gnuplot and libraries
+BR2_PACKAGE_GNUPLOT=y
+
 # filesystem tools for the target; used to generate storage partition
 BR2_PACKAGE_E2FSPROGS=y
 BR2_PACKAGE_DOSFSTOOLS=y

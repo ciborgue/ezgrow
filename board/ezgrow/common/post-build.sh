@@ -161,6 +161,20 @@ cloneGit() {
 	fi
 }
 
+RUBYSNMP_URL="https://github.com/hallidave/ruby-snmp.git"
+RUBYSNMP_FILE="${BR2_DL_DIR}/ruby-snmp-latest.tar.xz"
+cloneGit $RUBYSNMP_URL $RUBYSNMP_FILE
+
+############### Ruby SNMP library (git latest)
+	tar --extract --xz --strip-components=1 \
+		--directory=$(echo ${TARGET_DIR}/usr/lib/ruby/2.*) \
+		--file=${RUBYSNMP_FILE} \
+		lib
+	tar --extract --xz \
+		--directory=${TARGET_DIR}/usr/lib/ruby \
+		--file=${RUBYSNMP_FILE} \
+		data
+
 FIRMWARE_URL="https://github.com/RPi-Distro/firmware-nonfree.git"
 FIRMWARE_FILE="${BR2_DL_DIR}/firmware-nonfree.tar.xz"
 cloneGit $FIRMWARE_URL $FIRMWARE_FILE

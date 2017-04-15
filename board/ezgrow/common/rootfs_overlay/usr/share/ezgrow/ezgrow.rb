@@ -1,5 +1,6 @@
 #!/usr/bin/ruby
 
+require 'snmp'
 require 'net/smtp'
 require 'syslog/logger'
 require 'getoptlong'
@@ -10,18 +11,257 @@ require 'json' # use JSON for data import
 require 'yaml' # use YAML for state save; as it doesn't convert Time to String
 require 'zlib'
 
+include SNMP
+
+class SwitchedPDU
+	MAXAGE = 15 * 60 # 15 minutes
+	OUTLET_COUNT = 8
+	PDU_MODEL = {
+		'APC' => {
+			'offset' => 1, # outlet #1 is at rPDUOutletStatusOutletState.1
+			'power' => 'PowerNet-MIB::rPDUIdentDevicePowerVA.0',
+			'name' => 'PowerNet-MIB::sPDUOutletName',
+			'status' => 'PowerNet-MIB::sPDUOutletCtl',
+			'command' => 'PowerNet-MIB::sPDUOutletCtl',
+			'state' => { # from the MIB
+				'on' => 'outletOn',
+				'off' => 'outletOff',
+				'reboot' => 'outletReboot',
+				'unknown' => 'outletUnknown',
+				'onPending' => 'outletOnWithDelay',
+				'offPending' => 'outletOffWithDelay',
+				'cyclePending' => 'outletRebootWithDelay',
+			},
+			'value' => {
+				'on' => 'outletOn',
+				'off' => 'outletOff',
+			},
+			'numeric' => {
+				0 => 'off',
+				1 => 'on',
+			},
+		},
+		'Dataprobe' => {
+			'offset' => 0, # outlet #1 is at outletStatus.0
+			'power' => 'IBOOTBAR-MIB::currentLC1.0',
+			'name' => 'IBOOTBAR-MIB::outletName',
+			'status' => 'IBOOTBAR-MIB::outletStatus',
+			'command' => 'IBOOTBAR-MIB::outletCommand',
+			'state' => { # from the MIB
+				'on' => 'on',
+				'off' => 'off',
+				'reboot' => 'reboot',
+				'cycle' => 'cycle',
+				'onPending' => 'onPending',
+				'cyclePending' => 'cyclePending',
+			},
+			'value' => {
+				'on' => 'on',
+				'off' => 'off',
+			},
+			'numeric' => {
+				0 => 'off',
+				1 => 'on',
+			},
+		},
+	}
+	def initialize timestamp
+		@timestamp = timestamp
+		@conf = Hash.new
+		PDU_MODEL.each_key { |maker|
+			PDU_MODEL[maker]['numeric'].default = 'unknown'
+		}
+	end
+	def snmpGet oid
+		target = {
+				:version => :SNMPv1,
+				:community => @conf['--pass'],
+				:host => @conf['--addr'],
+		}
+		mibObject = MIB.new
+		mibObject.load_module oid.sub(/::.*/, '')
+		reading = ObjectId.new(mibObject.oid(oid))
+		Manager.open(target) { |manager|
+				response = manager.get(reading)
+				varbind = response.varbind_list.first
+				return varbind.value
+		}
+		nil
+	end
+	def snmpSet oid, value
+		target = {
+			:version => :SNMPv1,
+			:community => @conf['--pass'],
+			:host => @conf['--addr'],
+		}
+		mibObject = MIB.new
+		mibObject.load_module oid.sub(/::.*/, '')
+		reading = ObjectId.new(mibObject.oid(oid))
+		varbind = VarBind.new(reading, SNMP::Integer.new(value))
+		Manager.open(target) { |manager|
+			manager.set varbind
+		}
+	end
+	def collectPowerFromSNMP data
+		reading = snmpGet PDU_MODEL[data['maker']]['power']
+		raise "Wrong variable type" \
+			unless reading.class.to_s == 'SNMP::Integer'
+		if data['maker'] == 'APC'
+			# compared to data from the multimeter; idk why APC uses 125V
+			data['Amp'] = (reading.to_f - 2.0) / 125.0
+		elsif data['maker'] == 'Dataprobe'
+			data['Amp'] = reading.to_f / 10.0
+		else
+			raise RuntimeError, "Unsupported PDU [internal error]"
+		end
+	end
+	def collectNameFromSNMP data
+		# internally all the outlets are kept in zero-based array, i.e.
+		# outlet #1 is name[0]; use the offset to find the correct spot
+		data['outlet']['name'] = value = Array.new
+		(0...OUTLET_COUNT).each { |index|
+			reading = snmpGet PDU_MODEL[data['maker']]['name'] +
+				".#{index + PDU_MODEL[data['maker']]['offset']}"
+			raise "Wrong variable type" \
+				unless reading.class.to_s == 'SNMP::OctetString'
+			value[index] = reading.to_s
+		}
+	end
+	def collectStatusFromSNMP data
+		data['outlet']['status'] = value = Array.new
+		(0...OUTLET_COUNT).each { |index|
+			reading = snmpGet PDU_MODEL[data['maker']]['status'] +
+				".#{index + PDU_MODEL[data['maker']]['offset']}"
+			raise "Wrong variable type" \
+				unless reading.class.to_s == 'SNMP::Integer'
+			value[index] = PDU_MODEL[data['maker']]['numeric'][reading.to_i]
+		}
+	end
+	def collectFromSNMP
+		data = {
+			'timestamp' => @timestamp,
+			'outlet' => {}, # data container
+		}
+		sysObjectID = snmpGet('SNMPv2-MIB::sysObjectID.0')
+		raise RuntimeError, "Bad SNMP response; aborting" \
+			unless sysObjectID.class.to_s == 'SNMP::ObjectId'
+		sysObjectID = sysObjectID.to_s # convert sysObjectID from SNMP::*
+		if sysObjectID == 'IBOOTBAR-MIB::iBootBarAgent' or
+			sysObjectID == 'SNMPv2-SMI::enterprises.1418.4'
+			data['maker'] = 'Dataprobe'
+		elsif sysObjectID == 'PowerNet-MIB::masterSwitchrPDU' or
+			sysObjectID == 'SNMPv2-SMI::enterprises.318.1.3.4.5'
+			data['maker'] = 'APC'
+		else
+			raise RuntimeError, "Unsupported PDU: #{sysObjectID}"
+		end
+		collectPowerFromSNMP data
+		collectNameFromSNMP data
+		collectStatusFromSNMP data
+		data
+	end
+	def snmpExecuteCommand data, zeroIndx, userCmnd
+		return userCmnd if ! @conf.has_key?('slow') \
+			and data['outlet']['status'][zeroIndx] == userCmnd
+
+		zeroIndx += PDU_MODEL[data['maker']]['offset']
+		target = PDU_MODEL[data['maker']]['command']
+
+		rawValue = 0
+		PDU_MODEL[data['maker']]['numeric'].each { |k,v|
+			if v.eql? userCmnd
+				rawValue = k
+				break
+			end
+		}
+
+		snmpSet "#{target}.#{zeroIndx}", rawValue
+
+		data['outlet']['status'][zeroIndx] = userCmnd
+	end
+	def getDefaultPass list
+		list.each { |f|
+			next unless File.file? f
+			File.open(f).each_line { |line|
+				line = line.chomp.split
+				if line[0].eql? 'includeFile'
+					list.push line[1] unless list.include? line[1]
+				elsif line[0].eql? 'defCommunity'
+					return line[1]
+				end
+			}
+		}
+		'public' # nothing found, use 'public'
+	end
+	def run conf
+		@conf = conf
+
+		[ '--addr', '--json', '--cmnd' ].each { |requiredArg|
+			raise "No #{requiredArg} is provided; aborting" \
+				unless @conf.has_key? requiredArg
+		}
+
+		@conf['--pass'] = getDefaultPass [ '/etc/snmp/snmp.conf' ] \
+			unless @conf.has_key? '--pass'
+
+		data = { 'timestamp' => Time.at(0) } # trigger reload
+		if ! @conf.has_key?('--slow') and File.file?(@conf['--json'])
+			File.open(@conf['--json']) { |f|
+				data = JSON.parse f.read
+			}
+			data['timestamp'] = Time.parse data['timestamp']
+		end
+
+		# reload data if it is too old or '--slow' is given
+		data = collectFromSNMP if (@timestamp - data['timestamp']) > MAXAGE
+
+		@conf['cmnd'] = @conf['--cmnd'].downcase
+		case @conf['cmnd']
+			when 'on', 'off'
+				indx,outlet = nil,data['outlet']
+				if @conf.has_key? '--indx'
+					# we're zero-based, command line is one-based
+					indx = @conf['--indx'].to_i - 1
+				elsif @conf.has_key? '--name'
+					# see if there's an outlet by this name
+					indx = outlet['name'].index @conf['--name']
+				else
+					raise RuntimeError, "No 'name' or 'indx' provided"
+				end
+
+				raise RuntimeError, 'Outlet does not exist' \
+					if indx == nil or indx >= OUTLET_COUNT
+
+				# don't update amps here; delay it until next status
+				snmpExecuteCommand data, indx, @conf['--cmnd'] \
+					if outlet['status'][indx] != @conf['--cmnd']
+			when 'status'
+				# do nothing; status will be saved later anyway
+			else
+				raise RuntimeError, "Unknown command: [#{@conf['--cmnd']}]"
+		end
+
+		Tempfile.open('switched-pdu.', File.dirname(@conf['--json'])) { |f|
+			f.puts JSON.pretty_generate data
+			f.fsync
+			File.rename f.path, @conf['--json']
+		}
+	end
+end
 class History
 	def self.load prefs
 		file = prefs['path']['history']['temp']
 		return Hash.new unless File.exists? file
-		Zlib::GzipReader.open(file) { |f|
+		File.open(file) { |f|
 			return YAML.load f.read
 		}
 	end
 	def self.save prefs, data
 		file = prefs['path']['history']['temp']
-		Zlib::GzipWriter.open(file) { |f|
+		Tempfile.open('history.', File.dirname(file)) { |f|
 			f.puts data.to_yaml
+			f.fsync
+			File.rename f.path, file
 		}
 	end
 	def self.dump prefs, timestamp, data
@@ -46,16 +286,16 @@ class State
 	def self.load prefs
 		file = prefs['path']['state']
 		return Hash.new unless File.exists? file
-		Zlib::GzipReader.open(file) { |f|
+		File.open(file) { |f|
 			return YAML.load f.read
 		}
 	end
 	def self.save prefs, data
-		Tempfile.open { |f|
-			Zlib::GzipWriter.wrap(f) { |g|
-				g.puts data.to_yaml
-			}
-			File.rename f.path, prefs['path']['state']
+		file = prefs['path']['state']
+		Tempfile.open('state.', File.dirname(file)) { |f|
+			f.puts data.to_yaml
+			f.fsync
+			File.rename f.path, file
 		}
 	end
 end
@@ -64,7 +304,7 @@ class Main
 	DEFAULT_CONFIG	= '/etc/ezgrow/ezgrow.conf'
 
 	TOLERANCE		= 180	# max. reading age
-	INTERVAL		= 10
+	INTERVAL		= 15	# hardware limit (and default) is 16s
 
 	# these are the names of the outlets; you can use your own
 	#	(but there's a little point doing so)
@@ -98,6 +338,7 @@ class Main
 			method(:updateExhaustFan),
 			method(:updateAirConditioner),
 		]
+		@history = Hash.new
 	end
 	def loadJson(jsonName)
 		return Hash.new unless File.exists? jsonName
@@ -200,7 +441,7 @@ EOF
 		index = outlets['name'].index name
 		raise RuntimeError, "PDU: No outlet '#{name}'" \
 			if index == nil
-		debugLog "====== outletGet: #{name} is #{outlets['status'][index]}"
+		#debugLog "====== outletGet: #{name} is #{outlets['status'][index]}"
 		outlets['status'][index]
 	end
 	def outletSet name, state
@@ -208,11 +449,11 @@ EOF
 			debugLog "====== outletSet: outlet #{name} is already #{state}"
 		else
 			debugLog "====== outletSet: outlet #{name} switching to #{state}"
-			system @prefs[SWITCHEDPDU]['exec'] +
-				" --name '#{name}'" +
-				" --addr #{@prefs[SWITCHEDPDU]['addr']}" +
-				" --json #{@prefs[SWITCHEDPDU]['json']}" +
-				" --cmnd #{state}"
+			SwitchedPDU.new(@timestamp).run({
+				'--addr' => @prefs[SWITCHEDPDU]['addr'],
+				'--json' => @prefs[SWITCHEDPDU]['json'],
+				'--name' => name, '--cmnd' => state,
+			})
 			# Don't reload JSON; it takes some time to switch outlet so
 			# just wait until the next cycle. It's not 100% accurate but
 			# it's acceptable to me.
@@ -248,34 +489,37 @@ EOF
 
 		data = @history[@timestamp]['sensor']
 
-		if data.has_key? name
-			debugLog "loadSensorData: reusing #{sensor['json']} .."
-		else
-			debugLog "loadSensorData: loading #{sensor['json']} .."
-			if not File.exists? sensor['json'] or
+		### don't reload data for the same sensor/timestamp combination
+		### it's only next time script runs data is going to be reloaded
+		unless data.has_key? name
+			# no cached data; attempt to reload
+			if not File.file?(sensor['json']) or
 				((@timestamp - File.ctime(sensor['json'])) > TOLERANCE)
-				if sensor['required']
-					raise RuntimeError, "Essential sensor stuck: #{name}"
-				else
-					return nil
-				end
+				# No JSON data file or file ctime is too old
+				return nil unless sensor['required']
+				raise RuntimeError, "Essential sensor stuck: #{name}"
 			end
 			data[name] = loadJson sensor['json']
+			# TODO: check embedded timestamp
 		end
 		
-		### select the correct sensor; don't recheck 'timestamp' here
+		### select the correct sensor
 		data[name].each { |key,value|
 			next unless key.match sensor['regex']
 			value['timestamp'] = Time.parse value['timestamp'] \
 				unless value['timestamp'].class.to_s == 'Time'
-			debugLog "loadSensorData: #{name}/#{sensor['regex']}"
 			return value
 		}
 
 		return nil unless sensor['required']
-		raise RuntimeError, "Essential sensor has no regex: #{name}"
+		raise RuntimeError, "Nothing matches #{sensor['regex']}" +
+			" on required sensor #{sensor}"
 	end
-	def calculateAcMode degc, mode, limit
+	def calculateAcMode degc
+		limit = @prefs['temperature']['light'][outletGet(GROWLAMP)]
+		mode = @state['AC']['mode']
+		debugLog ">>> calculateAcMode: in, AC is #{mode}, temp is #{degc}"
+
 		if degc > limit['COOL']['on']
 			mode = 'COOL' # any mode -> COOL
 			debugLog "it's hot -> #{degc} / #{mode}"
@@ -296,52 +540,51 @@ EOF
 			mode = 'OFF'
 			debugLog "it's cold -> #{degc} / #{mode}"
 		end
+		debugLog "<<< calculateAcMode: out, mode is #{mode}"
 		mode
 	end
 	def updateAirConditioner
-		lamp = outletGet GROWLAMP
-		debugLog ">>> updateAirConditioner: in, lamp is: #{lamp}"
+		debugLog '>>> updateAirConditioner: in'
+		lamp,mode = outletGet(GROWLAMP),@state['AC']['mode']
 
-		mode,limit = @state['AC']['mode'],@prefs['temperature']['light'][lamp]
-
-		# use IndoorTemperature if avail.; use GrowZoneTemperature as a backup
-		#	(this one MUST be present)
-		if (indoor = loadSensorData INDOORTEMP) != nil
-			debugLog "Using IndoorTemperature .."
-			mode = calculateAcMode indoor['temperature'], mode, limit
-		elsif (growzonetemp = loadSensorData GROWZONETEMP) != nil
-			debugLog "Using GrowZoneTemperature .."
-			mode = calculateAcMode growzonetemp['temperature'], mode, limit
-		end
-
-		# possibly change VENT -> OFF if outside is hotter than inside
-		if (outdoor = loadSensorData OUTDOORTEMP) != nil \
-			and ['VENT'].include?(mode)
-			degc = outdoor['temperature']
-
-			if indoor != nil and degc > indoor['temperature']
-				mode = 'OFF'
-				debugLog "it's colder inside than out -> #{mode}"
-			elsif growzonetemp != nil and degc > growzonetemp['temperature']
-				mode = 'OFF' # weird, unlikely
-				debugLog "it's colder in grow zone than out -> #{mode}"
-			end
-		end
-
-		if mode == @state['AC']['mode']
-			debugLog "AC mode hasn't changed (#{mode}); NOT sending IR"
+		# use IndoorTemperature if avail; use GrowZoneTemperature as a backup
+		#	(GrowZone is required and raises an exception is missing)
+		reftemp = [
+			loadSensorData(INDOORTEMP),
+			loadSensorData(GROWZONETEMP),
+			loadSensorData(OUTDOORTEMP),
+		]
+		degc = nil
+		if reftemp[0] != nil
+			degc = reftemp[0]['temperature']
 		else
-			@state['AC']['mode'] = mode # save AC mode; it can't be read back
+			debugLog "WARNING: IndoorTemperature is missing;" +
+				" using backup GrowZoneTemperature .."
+			degc = reftemp[1]['temperature']
+		end
+		mode = calculateAcMode degc
 
-			debugLog "AC mode has changed (#{mode}); sending IR"
-			$stderr.puts @prefs['AC'][mode] % 2 # FAN=2
+		### possibly change VENT -> OFF if outside is warmer
+		if reftemp[2] != nil and 'VENT'.eql?(mode) and
+			degc < reftemp[2]['temperature']
+			mode = 'OFF'
+			debugLog "it's colder in than out, switching off"
 		end
 
-		debugLog "<<< updateAirConditioner: out [#{mode}]"
+		# see if IR has to be send; don't resend as the unit beeps every
+		# time it receives any valid command
+		if mode.eql?(@state['AC']['mode'])
+			debugLog "AC mode hasn't been changed (#{mode}); NOT sending IR"
+		else
+			debugLog "AC mode has been changed (#{mode}); sending IR"
+			debugLog @prefs['AC'][mode] % 2 # FAN=2
+		end
+		@state['AC']['mode'] = mode
+		debugLog "<<< updateAirConditioner: out [AC is now #{mode}]"
 	end
 	def updateExhaustFan
+		debugLog '>>> updateExhaustFan: in'
 		lamp = outletGet GROWLAMP
-		debugLog ">>> updateExhaustFan: in, lamp is #{lamp}"
 		value = 'on' # turn ON if sensor is disabled/unavaliable
 		if @prefs['sensor'].has_key? GROWZONETEMP \
 			and not @prefs['sensor'][GROWZONETEMP]['disabled']
@@ -398,13 +641,20 @@ EOF
 		#	'slow' is a debug speed hack; should be ignored by the real script
 		debugLog ">>> updatePduData: in"
 		pdu = @prefs[SWITCHEDPDU]
-		status = system pdu['exec'] +
-			' --addr ' + pdu['addr'] +
-			' --json ' + pdu['json'] +
-			' --cmnd status' +
-			' --slow'
+		pduObject = SwitchedPDU.new(@timestamp)
+		pduObject.run({
+			'--addr' => pdu['addr'],
+			'--json' => pdu['json'],
+			'--cmnd' => 'status',
+			'--slow' => nil,
+		})
+#		status = system pdu['exec'] +
+#			' --addr ' + pdu['addr'] +
+#			' --json ' + pdu['json'] +
+#			' --cmnd status' +
+#			' --slow'
 		raise RuntimeError, "Can't retrieve PDU status" \
-			if not status or ! File.exists? pdu['json']
+			unless File.file? pdu['json']
 
 		@history[@timestamp]['sensor'][SWITCHEDPDU] =
 			json = loadJson pdu['json']
@@ -413,39 +663,32 @@ EOF
 	end
 	def operate timestamp
 		@timestamp = timestamp
-		updateWatchdog
 
-		debugLog "==============================================="
 		debugLog "========== #{@timestamp} =========="
-
 
 		@state = {	# this is the bootstrap state
 			'stage' => 'grow',
-			'AC' => { 'mode' => 'OFF' }
+			'AC' => { 'mode' => 'OFF' },
 		} if (@state = State.load @prefs).empty?
-
 		@history[@timestamp] = {
 			'sensor' => Hash.new
-		} unless (@history = History.load @prefs).has_key? @timestamp
-
-		@updates.each { |method|
-			method.call
-			updateWatchdog
 		}
 
-		@history[@timestamp]['runtime'] = Time.new - @timestamp
-
-		if @history.length >= @prefs['settings']['save-history-every']
-			History.dump @prefs, @timestamp, @history
-		else
-			History.save @prefs, @history
-		end
+		@updates.each { |method|
+			updateWatchdog
+			method.call
+		}
 
 		State.save @prefs, @state
 
-		updateWatchdog
+		@history[@timestamp]['runtime'] = runtime = Time.new - @timestamp
 
-		@history[@timestamp]['runtime']
+		if @timestamp.min % @interval == 0 and @timestamp.sec == 0
+			History.dump @prefs, @timestamp, @history
+			@history.clear
+		end
+
+		runtime
 	end
 end
 
@@ -466,6 +709,7 @@ begin
 	
 	while true
 		seconds = app.interval - Time.new.sec % app.interval
+		app.debugLog "Sleeping for: #{'%.2f' % seconds}s"
 		sleep seconds
 
 		seconds = app.operate Time.new
