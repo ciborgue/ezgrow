@@ -4,7 +4,7 @@ require 'snmp'
 require 'net/smtp'
 require 'syslog/logger'
 require 'getoptlong'
-require 'deep_merge' # note that this has to be added to Ruby
+require 'deep_merge'
 require 'tempfile'
 require 'time'
 require 'json' # use JSON for data import
@@ -248,60 +248,9 @@ class SwitchedPDU
 		}
 	end
 end
-class History
-	def self.load prefs
-		file = prefs['path']['history']['temp']
-		return Hash.new unless File.exists? file
-		File.open(file) { |f|
-			return YAML.load f.read
-		}
-	end
-	def self.save prefs, data
-		file = prefs['path']['history']['temp']
-		Tempfile.open('history.', File.dirname(file)) { |f|
-			f.puts data.to_yaml
-			f.fsync
-			File.rename f.path, file
-		}
-	end
-	def self.dump prefs, timestamp, data
-		baseDirectory = prefs['path']['history']['perm']
-		Dir.mkdir baseDirectory unless Dir.exists? baseDirectory
-
-		saveDirectory = timestamp.strftime("#{baseDirectory}/%Y-%m-%d")
-		Dir.mkdir saveDirectory unless Dir.exists? saveDirectory
-
-		Tempfile.open('history.', saveDirectory) { |f|
-			Zlib::GzipWriter.wrap(f) { |g|
-				g.puts data.to_yaml
-			}
-			File.rename f.path, timestamp.strftime("#{saveDirectory}/%H:%M.gz")
-		}
-
-		File.unlink prefs['path']['history']['temp'] \
-			if File.exists? prefs['path']['history']['temp']
-	end
-end
-class State
-	def self.load prefs
-		file = prefs['path']['state']
-		return Hash.new unless File.exists? file
-		File.open(file) { |f|
-			return YAML.load f.read
-		}
-	end
-	def self.save prefs, data
-		file = prefs['path']['state']
-		Tempfile.open('state.', File.dirname(file)) { |f|
-			f.puts data.to_yaml
-			f.fsync
-			File.rename f.path, file
-		}
-	end
-end
 #---------0---------0---------0---------0---------0---------0---------0---------
 class Main
-	DEFAULT_CONFIG	= '/etc/ezgrow/ezgrow.conf'
+	DEFAULT_CONFIG		= '/etc/ezgrow/ezgrow.conf'
 
 	TOLERANCE		= 180	# max. reading age
 	INTERVAL		= 15	# hardware limit (and default) is 16s
@@ -310,15 +259,17 @@ class Main
 	#	(but there's a little point doing so)
 	GROWLAMP		=	'GrowLamp'
 	EXHAUSTFAN		=	'ExhaustFan'
+	INTERNALFAN		=	'InternalFan'
 	ACREMOTE		=	'SHARP-CRMC-A810JBEZ'
 	WATERPUMP		=	'WaterPump'
+	AIRPUMP			=	'AirPump'
 	SWITCHEDPDU		=	'SwitchedPDU'
 
 	# these are the names of the sensors; you can use your own
 	#	(but there's a little point doing so)
 	INDOORTEMP		=	'IndoorTemperature'
 	OUTDOORTEMP		=	'OutdoorTemperature'
-	GROWZONETEMP	=	'GrowZoneTemperature'
+	GROWZONETEMP		=	'GrowZoneTemperature'
 	WATERLEVEL		=	'WaterLevel'
 	WATERSENSOR		=	'WaterSensor'
 	FIVEVOLT		=	'FiveVolt'
@@ -331,13 +282,21 @@ class Main
 		@interval = INTERVAL
 		@prefs = Hash.new
 		@updates = [
-			method(:updatePduData),
 			method(:updateFiveVolt),
+			method(:updatePduData),
+			method(:updateAirPump),
 			method(:updateWaterPump),
 			method(:updateGrowLamp),
 			method(:updateExhaustFan),
+			method(:updateInternalFan),
 			method(:updateAirConditioner),
+			method(:historyDump),
+			method(:updateWatchdog), # make sure watchdog is updated before exit
 		]
+		@state = {	# this is the bootstrap state
+			'stage' => 'grow',
+			'AC' => { 'mode' => 'OFF' },
+		}
 		@history = Hash.new
 	end
 	def loadJson(jsonName)
@@ -380,6 +339,7 @@ class Main
 		}
 		File.open('/tmp/prefs.dump.json', 'w') { |f| # this is for debug only
 			f.puts JSON.pretty_generate @prefs
+			f.fsync
 		}
 		value
 	end
@@ -389,26 +349,63 @@ class Main
 			#Syslog::debug line.chomp
 		}
 	end
-	### Notify user by email; argument is the message subject
-	### 1. Exit if flag file present
-	### 2. Send email
-	### 3. Create flag file
-	### Note: flag file should be on the persistent storage because
-	###	system is going to be rebooted by the watchdog
-	### Note: this file should be deleted if script terminates with no error
-	### Note: it is possible that config files are misconfigured and
-	###	email can't be sent yet. This situation is not covered; you
-	###	must make your configuration files correct or else you won't
-	###	be auto-notified.
-	def emailNotify error
-		$stderr.puts error
-		$stderr.puts error.backtrace
-		return if File.exists? @prefs['path']['silence']
-		return # we're debugging
+	def historyDump
+		@state['last-runtime'] =
+			@history[@timestamp]['runtime'] =
+			Time.new - @timestamp
+
+		return unless @timestamp.min % @interval == 0 and @timestamp.sec == 0
+
+		baseDirectory = @prefs['path']['history']['perm']
+		Dir.mkdir baseDirectory unless Dir.exists? baseDirectory
+
+		saveDirectory = @timestamp.strftime("#{baseDirectory}/%Y-%m-%d")
+		Dir.mkdir saveDirectory unless Dir.exists? saveDirectory
+
+		Tempfile.open('history.', saveDirectory) { |f|
+			Zlib::GzipWriter.wrap(f) { |g|
+				g.puts @history.to_yaml
+				g.finish
+			}
+			f.fsync
+			File.rename f.path, @timestamp.strftime("#{saveDirectory}/%H:%M.gz")
+		}
+
+		@history.clear
+	end
+	def smtpFileLock name, remove
+		dir = @prefs['path']['silence']
+		Dir.mkdir dir \
+			unless File.directory? dir
+		if remove
+			File.unlink "#{dir}/#{name}" \
+				if File.file? "#{dir}/#{name}"
+			return true
+		end
+		return true if File.file? "#{dir}/#{name}"
+		File.open("#{dir}/#{name}", 'w') { |f|
+			f.puts @timestamp
+			f.fsync
+		}
+		false
+	end
+	def emailNotify name, error
+		### Notify user by email; argument is the message subject
+		### 1. Exit if flag file present
+		### 2. Send email
+		### 3. Create flag file
+		### Note: flag file should be on the persistent storage because
+		###	system is going to be rebooted by the watchdog
+		### Note: this file should be deleted if script terminates with no error
+		### Note: it is possible that config files are misconfigured and
+		###	email can't be sent yet. This situation is not covered; you
+		###	must make your configuration files correct or else you won't
+		###	be auto-notified.
+		return if smtpFileLock name, false
+		return
 		msgstr = <<EOF
 From: #{@prefs['name from']} <#{@prefs['mail from']}>
 To: #{@prefs['name to']} <#{@prefs['mail to']}>
-Message-Id: <#{SecureRandom.uuid}>
 Subject: #{error.message}
 
 Automated notification. Please don't reply.
@@ -423,17 +420,44 @@ EOF
 				@prefs['smtp']['mail from'],
 				@prefs['smtp']['mail to']
 		}
-		File.open(@prefs['path']['silence'], 'w') { |f|
-			f.puts error.message
-			f.fsync
-		}
 	end
-	# ideally, this should also set watchdog timeout to a few minutes via
-	# the IOCTL call; this is in my TODO list
+	def loadSensorData name
+		raise RuntimeError, "Unknown sensor: #{name}" \
+			if (sensor = @prefs['sensor'][name]) == nil
+
+		data = @history[@timestamp]['sensor']
+
+		### don't reload data for the same sensor/timestamp combination
+		### it's only next time script runs data is going to be reloaded
+		unless data.has_key? name
+			# no cached data; attempt to reload
+			if not File.file?(sensor['json']) or
+				((@timestamp - File.ctime(sensor['json'])) > TOLERANCE)
+				# No JSON data file or file ctime is too old
+				return nil unless sensor['required']
+				raise RuntimeError, "Essential sensor stuck: #{name}"
+			end
+			data[name] = loadJson sensor['json']
+			# TODO: check embedded timestamp
+		end
+		
+		### select the correct sensor
+		data[name].each { |key,value|
+			next unless key.match sensor['regex']
+			value['timestamp'] = Time.parse value['timestamp'] \
+				unless value['timestamp'].class.to_s == 'Time'
+			return value
+		}
+
+		return nil unless sensor['required']
+		raise RuntimeError, "Nothing matches #{sensor['regex']}" +
+			" on required sensor #{sensor}"
+	end
 	def updateWatchdog
-		debugLog "========= updateWatchdog"
+		# I wish I could set the timeout via ioctl
+		# but RPi watchdog hardware is limited to 16s
 		File.open(@prefs['path']['watchdog'], 'w') { |watchdog|
-			watchdog.print 'DEADBEEF'
+			watchdog.print 'DEADBEEF: ' + @timestamp.to_s
 		}
 	end
 	def outletGet name
@@ -482,38 +506,6 @@ EOF
 		outletSet GROWLAMP, lamp
 
 		debugLog "<<< updateGrowLamp: out [#{lamp}]"
-	end
-	def loadSensorData name
-		raise RuntimeError, "Unknown sensor: #{name}" \
-			if (sensor = @prefs['sensor'][name]) == nil
-
-		data = @history[@timestamp]['sensor']
-
-		### don't reload data for the same sensor/timestamp combination
-		### it's only next time script runs data is going to be reloaded
-		unless data.has_key? name
-			# no cached data; attempt to reload
-			if not File.file?(sensor['json']) or
-				((@timestamp - File.ctime(sensor['json'])) > TOLERANCE)
-				# No JSON data file or file ctime is too old
-				return nil unless sensor['required']
-				raise RuntimeError, "Essential sensor stuck: #{name}"
-			end
-			data[name] = loadJson sensor['json']
-			# TODO: check embedded timestamp
-		end
-		
-		### select the correct sensor
-		data[name].each { |key,value|
-			next unless key.match sensor['regex']
-			value['timestamp'] = Time.parse value['timestamp'] \
-				unless value['timestamp'].class.to_s == 'Time'
-			return value
-		}
-
-		return nil unless sensor['required']
-		raise RuntimeError, "Nothing matches #{sensor['regex']}" +
-			" on required sensor #{sensor}"
 	end
 	def calculateAcMode degc
 		limit = @prefs['temperature']['light'][outletGet(GROWLAMP)]
@@ -582,25 +574,56 @@ EOF
 		@state['AC']['mode'] = mode
 		debugLog "<<< updateAirConditioner: out [AC is now #{mode}]"
 	end
+	def updateInternalFan
+		debugLog '>>> updateInternalFan: in'
+		if outletGet(GROWLAMP).eql? 'off'
+			# ON for light-off time
+			value = 'on'
+		elsif outletGet(EXHAUSTFAN).eql? 'off'
+			# ON when it's too cold for exhaust fan to run
+			value = 'on'
+		else
+			value = updateFan(INTERNALFAN, GROWZONETEMP)
+		end
+		#outletSet INTERNALFAN, value if ['on', 'off'].include? value
+		debugLog "<<< updateInternalFan: out [#{outletGet INTERNALFAN}]"
+	end
 	def updateExhaustFan
 		debugLog '>>> updateExhaustFan: in'
-		lamp = outletGet GROWLAMP
-		value = 'on' # turn ON if sensor is disabled/unavaliable
-		if @prefs['sensor'].has_key? GROWZONETEMP \
-			and not @prefs['sensor'][GROWZONETEMP]['disabled']
-			sensorData = loadSensorData GROWZONETEMP
-			limit = @prefs['temperature']['light'][lamp]['FAN']
-			debugLog "updateExhaustFan: got temperature" +
-				" [#{sensorData['temperature']}]" +
-				" vs #{limit['on']} .. #{limit['off']}"
+		value = updateFan(EXHAUSTFAN, GROWZONETEMP)
+		outletSet EXHAUSTFAN, value if ['on', 'off'].include? value 
+		debugLog "<<< updateExhaustFan: out [#{outletGet EXHAUSTFAN}]"
+	end
+	def updateFan outlet, sensor
+		value, lampState, sensorData =
+			outletGet(outlet), outletGet(GROWLAMP), loadSensorData(sensor)
+		limit = @prefs['temperature']['light'][lampState][outlet]
+		debugLog "updateFan: t = [#{sensorData['temperature']}]" +
+			" on: #{limit['on']} off: #{limit['off']}"
+		if limit['on'] < limit['off'] # is this device warming or cooling?
+			if sensorData['temperature'] < limit['on']
+				value = 'on'
+			elsif sensorData['temperature'] > limit['off']
+				value = 'off'
+			else
+				value = 'keep'
+			end
+		else
 			if sensorData['temperature'] > limit['on']
 				value = 'on'
 			elsif sensorData['temperature'] < limit['off']
 				value = 'off'
+			else
+				value = 'keep'
 			end
 		end
-		outletSet EXHAUSTFAN, value
-		debugLog "<<< updateExhaustFan: out [#{value}]"
+		value
+	end
+	def updateAirPump
+		debugLog ">>> updateAirPump: in"
+		value = 'on' # air is always on
+		outletSet AIRPUMP, value
+		debugLog "<<< updateAirPump: out [#{outletGet AIRPUMP}]"
 	end
 	def updateWaterPump
 		# turn OFF if sensor is disabled/unavaliable; this can be dangerous
@@ -616,11 +639,11 @@ EOF
 				value = 'on'
 				break
 			end
-			emailNotify "Water is detected on the floor! Water pump is OFF"
+			emailNotify WATERSENSOR, "Water on the floor! Water pump is OFF"
 			break
 		end
 		outletSet WATERPUMP, value
-		debugLog "<<< updateWaterPump: out [#{value}]"
+		debugLog "<<< updateWaterPump: out [#{outletGet WATERPUMP}]"
 	end
 	def updateFiveVolt
 		# don't do anything; just send an email if 5V is not really 5.00
@@ -631,7 +654,7 @@ EOF
 			break if (sensorData = loadSensorData FIVEVOLT) == nil
 			value = sensorData[sensorConf['use']]['voltage']
 			break unless value < @prefs['voltage'][FIVEVOLT]['voltage']
-			emailNotify "Supply voltage is low: #{value}V"
+			emailNotify FIVEVOLT, "Supply voltage is low: #{value}V"
 			break
 		end
 		debugLog "<<< updateFiveVolt: out [#{value}]"
@@ -663,32 +686,16 @@ EOF
 	end
 	def operate timestamp
 		@timestamp = timestamp
+		debugLog "\033[2J\033[;H========== #{@timestamp} =========="
 
-		debugLog "========== #{@timestamp} =========="
-
-		@state = {	# this is the bootstrap state
-			'stage' => 'grow',
-			'AC' => { 'mode' => 'OFF' },
-		} if (@state = State.load @prefs).empty?
 		@history[@timestamp] = {
 			'sensor' => Hash.new
 		}
-
 		@updates.each { |method|
 			updateWatchdog
 			method.call
 		}
-
-		State.save @prefs, @state
-
-		@history[@timestamp]['runtime'] = runtime = Time.new - @timestamp
-
-		if @timestamp.min % @interval == 0 and @timestamp.sec == 0
-			History.dump @prefs, @timestamp, @history
-			@history.clear
-		end
-
-		runtime
+		@state['last-runtime']
 	end
 end
 
@@ -701,12 +708,6 @@ begin
 		[ '--config', '-c', GetoptLong::REQUIRED_ARGUMENT ],
 	)
 
-	Tempfile.open('prefs.') { |f|
-		f.puts JSON.pretty_generate app.prefs
-		f.fsync
-		File.rename f.path, '/tmp/prefs.dump.json'
-	}
-	
 	while true
 		seconds = app.interval - Time.new.sec % app.interval
 		app.debugLog "Sleeping for: #{'%.2f' % seconds}s"
@@ -716,7 +717,7 @@ begin
 		app.debugLog "Finished in: #{'%.2f' % seconds}s"
 	end
 rescue => e
-	app.emailNotify e
+	app.emailNotify 'Internal', e
 	raise
 end
 # vim: set fdm=syntax tabstop=4 shiftwidth=4 noexpandtab modeline:

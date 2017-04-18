@@ -49,3 +49,8 @@ report_info "Mounting ${STORAGE_BLOCK_DEVICE} on ${STORAGE_MOUNTPOINT} .."
 mount -t ext4 -o ${STORAGE_MOUNT_OPTS} \
   ${STORAGE_BLOCK_DEVICE} ${STORAGE_MOUNTPOINT}
 report_ok_fail
+
+cat > /tmp/.ash_history <<EOF
+mount -o rw,remount /site
+mount -o ro,remount /site
+EOF
