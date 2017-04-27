@@ -87,6 +87,9 @@ BR2_PACKAGE_IPTABLES=y
 BR2_PACKAGE_TCPDUMP=y
 BR2_PACKAGE_NMAP=y
 
+# Serial terminal client; not strictly required
+BR2_PACKAGE_MINICOM=y
+
 # Tor is not required but it can help the community and can make your
 # RPi accessible via the .onion domain
 BR2_PACKAGE_TOR=y
