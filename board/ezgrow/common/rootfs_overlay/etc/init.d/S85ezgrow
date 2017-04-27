@@ -1,0 +1,3 @@
+#!/bin/sh
+
+tmux new-window /usr/share/ezgrow/ezgrow.rb
