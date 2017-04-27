@@ -290,17 +290,20 @@ class Main
 			method(:updateExhaustFan),
 			method(:updateInternalFan),
 			method(:updateAirConditioner),
-			method(:historyDump),
 			method(:updateWatchdog), # make sure watchdog is updated before exit
 		]
 		@state = {	# this is the bootstrap state
 			'stage' => 'grow',
 			'AC' => { 'mode' => 'OFF' },
 		}
-		@history = Hash.new
+		@history = {
+			Time.new => {
+				'log' => [ 'Script restarted' ]
+			}
+		}
 	end
 	def loadJson(jsonName)
-		return Hash.new unless File.exists? jsonName
+		return Hash.new unless File.file? jsonName
 		File.open(jsonName) { |json|
 			return JSON.parse json.read
 		}
@@ -346,14 +349,10 @@ class Main
 	def debugLog text
 		text.each_line { |line|
 			$stderr.puts line.chomp
-			#Syslog::debug line.chomp
+			@history[@timestamp]['log'].push line.chomp
 		}
 	end
-	def historyDump
-		@state['last-runtime'] =
-			@history[@timestamp]['runtime'] =
-			Time.new - @timestamp
-
+	def historyDump prefix, interval = INTERVAL
 		return unless @timestamp.min % @interval == 0 and @timestamp.sec == 0
 
 		baseDirectory = @prefs['path']['history']['perm']
@@ -362,13 +361,14 @@ class Main
 		saveDirectory = @timestamp.strftime("#{baseDirectory}/%Y-%m-%d")
 		Dir.mkdir saveDirectory unless Dir.exists? saveDirectory
 
-		Tempfile.open('history.', saveDirectory) { |f|
+		Tempfile.open(prefix, saveDirectory) { |f|
 			Zlib::GzipWriter.wrap(f) { |g|
 				g.puts @history.to_yaml
 				g.finish
 			}
 			f.fsync
-			File.rename f.path, @timestamp.strftime("#{saveDirectory}/%H:%M.gz")
+			File.rename f.path,
+				@timestamp.strftime("#{saveDirectory}/#{prefix}%H%M.gz")
 		}
 
 		@history.clear
@@ -454,8 +454,6 @@ EOF
 			" on required sensor #{sensor}"
 	end
 	def updateWatchdog
-		# I wish I could set the timeout via ioctl
-		# but RPi watchdog hardware is limited to 16s
 		File.open(@prefs['path']['watchdog'], 'w') { |watchdog|
 			watchdog.print 'DEADBEEF: ' + @timestamp.to_s
 		}
@@ -463,14 +461,12 @@ EOF
 	def outletGet name
 		outlets = @history[@timestamp]['sensor'][SWITCHEDPDU]['outlet']
 		index = outlets['name'].index name
-		raise RuntimeError, "PDU: No outlet '#{name}'" \
-			if index == nil
-		#debugLog "====== outletGet: #{name} is #{outlets['status'][index]}"
+		raise RuntimeError, "PDU: No outlet '#{name}'" if index == nil
 		outlets['status'][index]
 	end
 	def outletSet name, state
 		if state == outletGet(name)
-			debugLog "====== outletSet: outlet #{name} is already #{state}"
+			#debugLog "====== outletSet: outlet #{name} is already #{state}"
 		else
 			debugLog "====== outletSet: outlet #{name} switching to #{state}"
 			SwitchedPDU.new(@timestamp).run({
@@ -487,18 +483,13 @@ EOF
 	def updateGrowLamp
 		### no need for dynamic cycle update; it's really 12/12 or 6/18
 		###		(but you can permanently adjust it to 4/20 or even 0/24)
-		debugLog ">>> updateGrowLamp: in"
-
 		stage = @state['stage']
 		cycle = @prefs['light'][stage]['cycle']
-		debugLog "Light cycle selected: #{cycle}/#{24 - cycle}hr for #{stage}"
 
 		peak = @prefs['temperature']['peak'][stage]
 		peak = @state['peak'][stage] \
 			if @state.has_key? 'peak' and @state['peak'].has_key? stage
 		peak = Time.parse(peak) unless peak.class.to_s == 'Time'
-		debugLog "Peak selected: #{peak.strftime('%H:%M')}" +
-			"; now: #{@timestamp.strftime('%H:%M')}"
 
 		lamp = ((@timestamp > peak - cycle * 1800) and
 			(@timestamp < peak + cycle * 1800)) ? 'off' : 'on'
@@ -536,7 +527,6 @@ EOF
 		mode
 	end
 	def updateAirConditioner
-		debugLog '>>> updateAirConditioner: in'
 		lamp,mode = outletGet(GROWLAMP),@state['AC']['mode']
 
 		# use IndoorTemperature if avail; use GrowZoneTemperature as a backup
@@ -564,12 +554,14 @@ EOF
 		end
 
 		# see if IR has to be send; don't resend as the unit beeps every
-		# time it receives any valid command
-		if mode.eql?(@state['AC']['mode'])
-			debugLog "AC mode hasn't been changed (#{mode}); NOT sending IR"
-		else
+		# time it receives ANY valid command. Send if AC mode has been changed
+		# and at top & bottom of each hour
+		if not mode.eql?(@state['AC']['mode']) or
+			[0,30].include? @timestamp.min and @timestamp.sec == 0
 			debugLog "AC mode has been changed (#{mode}); sending IR"
 			debugLog @prefs['AC'][mode] % 2 # FAN=2
+		else
+			debugLog "AC mode hasn't been changed (#{mode}); NOT sending IR"
 		end
 		@state['AC']['mode'] = mode
 		debugLog "<<< updateAirConditioner: out [AC is now #{mode}]"
@@ -663,39 +655,55 @@ EOF
 		# asks PDU control script to retrieve status of the unit and write JSON
 		#	'slow' is a debug speed hack; should be ignored by the real script
 		debugLog ">>> updatePduData: in"
-		pdu = @prefs[SWITCHEDPDU]
+		pdu = @prefs[SWITCHEDPDU] # get PDU setup
 		pduObject = SwitchedPDU.new(@timestamp)
-		pduObject.run({
-			'--addr' => pdu['addr'],
-			'--json' => pdu['json'],
+		pduObject.run({'--addr' => pdu['addr'], '--json' => pdu['json'],
 			'--cmnd' => 'status',
 			'--slow' => nil,
 		})
-#		status = system pdu['exec'] +
-#			' --addr ' + pdu['addr'] +
-#			' --json ' + pdu['json'] +
-#			' --cmnd status' +
-#			' --slow'
-		raise RuntimeError, "Can't retrieve PDU status" \
-			unless File.file? pdu['json']
-
 		@history[@timestamp]['sensor'][SWITCHEDPDU] =
 			json = loadJson pdu['json']
-
 		debugLog "<<< updatePduData: out; #{json['Amp']} amp"
 	end
 	def operate timestamp
 		@timestamp = timestamp
-		debugLog "\033[2J\033[;H========== #{@timestamp} =========="
-
 		@history[@timestamp] = {
-			'sensor' => Hash.new
+			'sensor' => Hash.new,
+			'last-runtime' => nil,
+			'log' => Array.new,
 		}
+		debugLog "========== #{@timestamp} =========="
 		@updates.each { |method|
 			updateWatchdog
 			method.call
 		}
-		@state['last-runtime']
+		@history[@timestamp]['last-runtime'] = Time.new - @timestamp
+		@history[@timestamp].delete 'sensor'
+		historyDump 'operation-'
+
+		@history['last-runtime']
+	end
+	def archiver timestamp
+		@timestamp = timestamp
+
+		# load switched PDU JSON
+		jsons = { @prefs[SWITCHEDPDU]['json'] => nil }
+
+		# collect all JSON names used
+		@prefs['sensor'].each { |name,data|
+			jsons[data['json']] = nil \
+				if data.has_key? 'json' and not jsons.has_key? data['json']
+		}
+
+		# load all JSON files
+		jsons.keys.each { |k|
+			jsons[k] = loadJson k if File.file?(k) and
+				((@timestamp - File.ctime(k)) < TOLERANCE)
+		}
+
+		@history[@timestamp] = jsons # add data to the history
+
+		historyDump 'sensors-', 60
 	end
 end
 
@@ -706,15 +714,19 @@ begin
 
 	commandLine = app.parseCommandLine GetoptLong.new(
 		[ '--config', '-c', GetoptLong::REQUIRED_ARGUMENT ],
+		[ '--logger', '-l', GetoptLong::NO_ARGUMENT ],
 	)
 
 	while true
 		seconds = app.interval - Time.new.sec % app.interval
-		app.debugLog "Sleeping for: #{'%.2f' % seconds}s"
 		sleep seconds
-
-		seconds = app.operate Time.new
-		app.debugLog "Finished in: #{'%.2f' % seconds}s"
+		timestamp = Time.new # reference timestamp
+		if commandLine.has_key? '--logger'
+			sleep 8
+			app.archiver timestamp
+		else
+			app.operate timestamp
+		end
 	end
 rescue => e
 	app.emailNotify 'Internal', e
