@@ -6,6 +6,7 @@ require 'syslog/logger'
 require 'getoptlong'
 require 'deep_merge'
 require 'tempfile'
+require 'fileutils'
 require 'time'
 require 'json' # use JSON for data import
 require 'yaml' # use YAML for state save; as it doesn't convert Time to String
@@ -353,7 +354,7 @@ class Main
 		}
 	end
 	def historyDump prefix, interval = INTERVAL
-		return unless @timestamp.min % @interval == 0 and @timestamp.sec == 0
+		return unless @timestamp.min % interval == 0 and @timestamp.sec == 0
 
 		baseDirectory = @prefs['path']['history']['perm']
 		Dir.mkdir baseDirectory unless Dir.exists? baseDirectory
@@ -373,20 +374,24 @@ class Main
 
 		@history.clear
 	end
-	def smtpFileLock name, remove
-		dir = @prefs['path']['silence']
-		Dir.mkdir dir \
-			unless File.directory? dir
-		if remove
-			File.unlink "#{dir}/#{name}" \
-				if File.file? "#{dir}/#{name}"
+	def smtpNotifiedRecently name
+		timeout = @prefs['smtp']['timeout'][name]
+		timeout = @prefs['smtp']['timeout']['default'] if timeout == nil
+
+		silenceDir = @prefs['path']['silence']
+		Dir.mkdir silenceDir unless File.directory? silenceDir
+
+		flag = silenceDir + '/' + name
+
+		lastNotified = Time.at(0)
+		lastNotified = File.ctime(flag) if File.file? flag
+
+		if (@timeout - lastNotified) < timeout
+			debugLog "====== smtpNotifiedRecently: supressed email for #{name}"
 			return true
 		end
-		return true if File.file? "#{dir}/#{name}"
-		File.open("#{dir}/#{name}", 'w') { |f|
-			f.puts @timestamp
-			f.fsync
-		}
+		debugLog "====== smtpNotifiedRecently: sending email for #{name}"
+		FileUtils::touch flag
 		false
 	end
 	def emailNotify name, error
@@ -401,24 +406,41 @@ class Main
 		###	email can't be sent yet. This situation is not covered; you
 		###	must make your configuration files correct or else you won't
 		###	be auto-notified.
-		return if smtpFileLock name, false
-		return
+		return if smtpNotifiedRecently name
+		smtp = @prefs['smtp']
 		msgstr = <<EOF
-From: #{@prefs['name from']} <#{@prefs['mail from']}>
-To: #{@prefs['name to']} <#{@prefs['mail to']}>
-Subject: #{error.message}
-
-Automated notification. Please don't reply.
-
-=== backtrace ===
-#{error.backtrace}
-=================
+From: #{smtp['name from']} <#{smtp['mail from']}>
+To: #{smtp['name to']} <#{smtp['mail to']}>
+CC: #{smtp['cc'].join ','}
 EOF
-		Net::SMTP.start(@prefs['smtp']['server'], 25,
-			@prefs['smtp']['ehlo']) { |smtp|
-			smtp.send_message msgstr,
-				@prefs['smtp']['mail from'],
-				@prefs['smtp']['mail to']
+		if error.class.to_s.eql? 'String'
+			msgstr += <<EOF
+Subject: #{name}: #{error}
+
+This is automated notification; application is still running but wants to
+notify you.
+EOF
+		else
+			msgstr += <<EOF
+Subject: #{name}: #{error.message}
+
+This is automated notification; application crashed, backtrace is attached.
+Note that RPi is going to be rebooted by the watchdog timer and you might get
+more notificatons soon.
+
+=== exception backtrace ===
+#{error.backtrace}
+===========================
+EOF
+		end
+		
+		server = Net::SMTP.new(smtp['server'], smtp['port'])
+		#server.set_debug_output $stderr
+		server.enable_tls if smtp['enable_tls']
+		server.start(smtp['ehlo'],
+			smtp['login'], smtp['password'], :login) { |f|
+			f.send_message msgstr, smtp['mail from'],
+				[smtp['mail to']] + smtp['cc']
 		}
 	end
 	def loadSensorData name
@@ -618,7 +640,8 @@ EOF
 		debugLog "<<< updateAirPump: out [#{outletGet AIRPUMP}]"
 	end
 	def updateWaterPump
-		# turn OFF if sensor is disabled/unavaliable; this can be dangerous
+		# turn OFF if sensor is disabled/unavaliable
+		# leaving pump running can be dangerous
 		debugLog ">>> updateWaterPump: in"
 		value = 'off'
 		sensorConf = @prefs['sensor'][WATERSENSOR]
@@ -652,8 +675,6 @@ EOF
 		debugLog "<<< updateFiveVolt: out [#{value}]"
 	end
 	def updatePduData
-		# asks PDU control script to retrieve status of the unit and write JSON
-		#	'slow' is a debug speed hack; should be ignored by the real script
 		debugLog ">>> updatePduData: in"
 		pdu = @prefs[SWITCHEDPDU] # get PDU setup
 		pduObject = SwitchedPDU.new(@timestamp)
@@ -663,7 +684,16 @@ EOF
 		})
 		@history[@timestamp]['sensor'][SWITCHEDPDU] =
 			json = loadJson pdu['json']
-		debugLog "<<< updatePduData: out; #{json['Amp']} amp"
+		amp = json['Amp']
+		limit = pdu['Amp'][outletGet GROWLAMP]
+		if amp > limit['hi']
+			emailNotify SWITCHEDPDU, 'Power consumption is too high!' +
+				'Powering off'
+		elsif amp < limit['lo']
+			emailNotify SWITCHEDPDU, 'Power consumption is too low!' +
+				'Is main lamp failed?'
+		end
+		debugLog "<<< updatePduData: out; #{amp} amp; #{limit.inspect}"
 	end
 	def operate timestamp
 		@timestamp = timestamp
@@ -715,14 +745,20 @@ begin
 	commandLine = app.parseCommandLine GetoptLong.new(
 		[ '--config', '-c', GetoptLong::REQUIRED_ARGUMENT ],
 		[ '--logger', '-l', GetoptLong::NO_ARGUMENT ],
+		[ '--test-email', '-t', GetoptLong::NO_ARGUMENT ],
 	)
+
+	if commandLine.has_key? '--test-email'
+		app.emailNotify 'ApplicationTest', 'Email test#1, application notify'
+		raise RuntimeError, 'Email test#2, exception caught'
+	end
 
 	while true
 		seconds = app.interval - Time.new.sec % app.interval
 		sleep seconds
 		timestamp = Time.new # reference timestamp
 		if commandLine.has_key? '--logger'
-			sleep 8
+			sleep 8 # actually archive 8 sec AFTER timestamp
 			app.archiver timestamp
 		else
 			app.operate timestamp
