@@ -386,7 +386,7 @@ class Main
 		lastNotified = Time.at(0)
 		lastNotified = File.ctime(flag) if File.file? flag
 
-		if (@timeout - lastNotified) < timeout
+		if (@timestamp - lastNotified) < timeout
 			debugLog "====== smtpNotifiedRecently: supressed email for #{name}"
 			return true
 		end
@@ -590,6 +590,7 @@ EOF
 	end
 	def updateInternalFan
 		debugLog '>>> updateInternalFan: in'
+		value = 'off'
 		if outletGet(GROWLAMP).eql? 'off'
 			# ON for light-off time
 			value = 'on'
@@ -599,7 +600,7 @@ EOF
 		else
 			value = updateFan(INTERNALFAN, GROWZONETEMP)
 		end
-		#outletSet INTERNALFAN, value if ['on', 'off'].include? value
+		outletSet INTERNALFAN, value if ['on', 'off'].include? value
 		debugLog "<<< updateInternalFan: out [#{outletGet INTERNALFAN}]"
 	end
 	def updateExhaustFan
