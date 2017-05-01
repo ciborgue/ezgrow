@@ -64,7 +64,7 @@ class SwitchedPDU
 				0 => 'off',
 				1 => 'on',
 			},
-		},
+		}
 	}
 	def initialize timestamp
 		@timestamp = timestamp
@@ -345,6 +345,7 @@ class Main
 			f.puts JSON.pretty_generate @prefs
 			f.fsync
 		}
+		updateWatchdog
 		value
 	end
 	def debugLog text
@@ -386,6 +387,10 @@ class Main
 		lastNotified = Time.at(0)
 		lastNotified = File.ctime(flag) if File.file? flag
 
+		if @timestamp == nil # test invocation with '--test-email'
+			@timestamp = Time.new
+			@history[@timestamp] = { 'log' => [] }
+		end
 		if (@timestamp - lastNotified) < timeout
 			debugLog "====== smtpNotifiedRecently: supressed email for #{name}"
 			return true
@@ -476,9 +481,9 @@ EOF
 			" on required sensor #{sensor}"
 	end
 	def updateWatchdog
-		File.open(@prefs['path']['watchdog'], 'w') { |watchdog|
-			watchdog.print 'DEADBEEF: ' + @timestamp.to_s
-		}
+#		@watchdog = File.open(@prefs['path']['watchdog'], 'w') \
+#			if @watchdog == nil
+#		@watchdog.print 'DEADBEEF: ' + @timestamp.to_s
 	end
 	def outletGet name
 		outlets = @history[@timestamp]['sensor'][SWITCHEDPDU]['outlet']
@@ -513,12 +518,17 @@ EOF
 			if @state.has_key? 'peak' and @state['peak'].has_key? stage
 		peak = Time.parse(peak) unless peak.class.to_s == 'Time'
 
-		lamp = ((@timestamp > peak - cycle * 1800) and
-			(@timestamp < peak + cycle * 1800)) ? 'off' : 'on'
+		lamp = (((@timestamp > (peak - cycle * 30 * 60)) and
+			(@timestamp < (peak + cycle * 30 * 60)))) ? 'off' : 'on'
+
+		debugLog "#{lamp}: #{cycle}, #{@timestamp} vs" +
+			" #{peak - cycle * 30 * 60} / #{peak + cycle * 30 * 60}"
+
+		lamp = 'off'
 
 		outletSet GROWLAMP, lamp
 
-		debugLog "<<< updateGrowLamp: out [#{lamp}]"
+		debugLog "<<< updateGrowLamp: out [#{lamp}; #{peak}; #{cycle}]"
 	end
 	def calculateAcMode degc
 		limit = @prefs['temperature']['light'][outletGet(GROWLAMP)]
@@ -703,7 +713,7 @@ EOF
 			'last-runtime' => nil,
 			'log' => Array.new,
 		}
-		debugLog "========== #{@timestamp} =========="
+		debugLog "========== operate: #{@timestamp} =========="
 		@updates.each { |method|
 			updateWatchdog
 			method.call
@@ -716,6 +726,7 @@ EOF
 	end
 	def archiver timestamp
 		@timestamp = timestamp
+		debugLog "========== archiver: #{@timestamp} =========="
 
 		# load switched PDU JSON
 		jsons = { @prefs[SWITCHEDPDU]['json'] => nil }
@@ -745,7 +756,8 @@ begin
 
 	commandLine = app.parseCommandLine GetoptLong.new(
 		[ '--config', '-c', GetoptLong::REQUIRED_ARGUMENT ],
-		[ '--logger', '-l', GetoptLong::NO_ARGUMENT ],
+		[ '--operate', '-o', GetoptLong::NO_ARGUMENT ],
+		[ '--archiver', '-l', GetoptLong::NO_ARGUMENT ],
 		[ '--test-email', '-t', GetoptLong::NO_ARGUMENT ],
 	)
 
@@ -758,11 +770,13 @@ begin
 		seconds = app.interval - Time.new.sec % app.interval
 		sleep seconds
 		timestamp = Time.new # reference timestamp
-		if commandLine.has_key? '--logger'
-			sleep 8 # actually archive 8 sec AFTER timestamp
+		if commandLine.has_key? '--archiver'
+			sleep 8 # actually archive 8 sec AFTER the timestamp
 			app.archiver timestamp
-		else
+		elsif commandLine.has_key? '--operate'
 			app.operate timestamp
+		else
+			raise RuntimeError, 'Nothing to do; use --operate or --archiver'
 		end
 	end
 rescue => e
