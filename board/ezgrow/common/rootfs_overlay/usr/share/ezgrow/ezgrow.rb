@@ -482,9 +482,9 @@ EOF
 			" on required sensor #{sensor}"
 	end
 	def updateWatchdog
-#		@watchdog = File.open(@prefs['path']['watchdog'], 'w') \
-#			if @watchdog == nil
-#		@watchdog.print 'DEADBEEF: ' + @timestamp.to_s
+		@watchdog = File.open(@prefs['path']['watchdog'], 'w') \
+			if @watchdog == nil
+		@watchdog.ioctl 0x80045705, 0 # WDIOC_KEEPALIVE
 	end
 	def outletGet name
 		outlets = @history[@timestamp]['sensor'][SWITCHEDPDU]['outlet']
@@ -566,7 +566,7 @@ EOF
 			degc < reftemp[2]['temperature']
 			mode = 'OFF'
 			debugLog "AC is set to 'OFF' because it's colder in than out; " +
-				"#{degc}C / #{reftemp[2]}C"
+				"#{degc}°C / #{reftemp[2]['temperature']}°C"
 		end
 
 		# see if IR has to be send; don't resend as the unit beeps every
