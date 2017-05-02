@@ -1,3 +1,3 @@
-DAEMON_ARGS="-2 -f /root/tmux-startup.conf"
+DAEMON_ARGS="-2u -f /root/tmux-startup.conf"
 
 #MODULE_DISABLED=yes
