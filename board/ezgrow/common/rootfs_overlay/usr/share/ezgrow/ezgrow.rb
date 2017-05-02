@@ -280,6 +280,7 @@ class Main
 	attr_reader	:prefs
 
 	def initialize
+		Syslog::Logger.new 'ezgrow::main' # mark syslog records
 		@interval = INTERVAL
 		@prefs = Hash.new
 		@updates = [
@@ -518,49 +519,31 @@ EOF
 			if @state.has_key? 'peak' and @state['peak'].has_key? stage
 		peak = Time.parse(peak) unless peak.class.to_s == 'Time'
 
-		lamp = (((@timestamp > (peak - cycle * 30 * 60)) and
-			(@timestamp < (peak + cycle * 30 * 60)))) ? 'off' : 'on'
-
-		debugLog "#{lamp}: #{cycle}, #{@timestamp} vs" +
-			" #{peak - cycle * 30 * 60} / #{peak + cycle * 30 * 60}"
-
-		lamp = 'off'
-
+		lamp = 'on'
+		[ -86400, 0, +86400 ].each { |off|
+			timeoff = [
+				peak + off - cycle * 30 * 60, peak + off + cycle * 30 * 60
+			]
+			if @timestamp > timeoff[0] and @timestamp < timeoff[1]
+				lamp='off'
+				break
+			end
+		}
 		outletSet GROWLAMP, lamp
-
 		debugLog "<<< updateGrowLamp: out [#{lamp}; #{peak}; #{cycle}]"
 	end
 	def calculateAcMode degc
 		limit = @prefs['temperature']['light'][outletGet(GROWLAMP)]
 		mode = @state['AC']['mode']
-		debugLog ">>> calculateAcMode: in, AC is #{mode}, temp is #{degc}"
-
-		if degc > limit['COOL']['on']
-			mode = 'COOL' # any mode -> COOL
-			debugLog "it's hot -> #{degc} / #{mode}"
-		elsif ['COOL'].include?(mode) and degc > limit['COOL']['off']
-			mode = 'COOL' # keep COOL if we're on COOL
-			debugLog "it's still hot -> #{degc} / #{mode}"
-		else
-			mode = 'VENT' # decide VENT/OFF later
-			debugLog "it's colder -> #{degc} / #{mode}"
-		end
-		if not ['COOL'].include?(mode) and degc > limit['VENT']['on']
-			mode = 'VENT' # any mode except COOL -> VENT
-			debugLog "it's is warm -> #{degc} / #{mode}"
-		elsif ['VENT'].include?(mode) and degc > limit['VENT']['off']
-			mode = 'VENT' # keep VENT if we're on VENT
-			debugLog "it's still warm -> #{degc} / #{mode}"
-		else
-			mode = 'OFF'
-			debugLog "it's cold -> #{degc} / #{mode}"
-		end
-		debugLog "<<< calculateAcMode: out, mode is #{mode}"
-		mode
+		debugLog ">>> calculateAcMode: in; AC is #{mode}; temp is #{degc}; " +
+			"COOL: #{limit['COOL'].inspect}; VENT: #{limit['VENT'].inspect}"
+		return 'COOL' if degc > limit['COOL']['on'] or
+			'COOL'.eql?(mode) and degc > limit['COOL']['off']
+		return 'VENT' if degc > limit['VENT']['on'] or
+			'VENT'.eql?(mode) and degc > limit['VENT']['off']
+		'OFF'
 	end
 	def updateAirConditioner
-		lamp,mode = outletGet(GROWLAMP),@state['AC']['mode']
-
 		# use IndoorTemperature if avail; use GrowZoneTemperature as a backup
 		#	(GrowZone is required and raises an exception is missing)
 		reftemp = [
@@ -573,7 +556,7 @@ EOF
 			degc = reftemp[0]['temperature']
 		else
 			debugLog "WARNING: IndoorTemperature is missing;" +
-				" using backup GrowZoneTemperature .."
+				" using GrowZoneTemperature as a backup"
 			degc = reftemp[1]['temperature']
 		end
 		mode = calculateAcMode degc
@@ -582,18 +565,26 @@ EOF
 		if reftemp[2] != nil and 'VENT'.eql?(mode) and
 			degc < reftemp[2]['temperature']
 			mode = 'OFF'
-			debugLog "it's colder in than out, switching off"
+			debugLog "AC is set to 'OFF' because it's colder in than out; " +
+				"#{degc}C / #{reftemp[2]}C"
 		end
 
 		# see if IR has to be send; don't resend as the unit beeps every
 		# time it receives ANY valid command. Send if AC mode has been changed
 		# and at top & bottom of each hour
-		if not mode.eql?(@state['AC']['mode']) or
-			[0,30].include? @timestamp.min and @timestamp.sec == 0
-			debugLog "AC mode has been changed (#{mode}); sending IR"
-			debugLog @prefs['AC'][mode] % 2 # FAN=2
+		if (not mode.eql? @state['AC']['mode']) or
+			([0,30].include?(@timestamp.min) and (@timestamp.sec == 0))
+			debugLog "AC: sending IR (#{mode} / #{@state['AC']['mode']})"
+			command=@prefs['AC'][mode] % 3 # FAN=3
+			debugLog "Running [x5]: #{command}"
+			(0...5).each {
+				updateWatchdog
+				raise RuntimeError, "IR command failed: #{command}" \
+					unless Kernel.system command
+				sleep 1
+			}
 		else
-			debugLog "AC mode hasn't been changed (#{mode}); NOT sending IR"
+			debugLog "AC: NOT sending IR (#{mode} / #{@state['AC']['mode']})"
 		end
 		@state['AC']['mode'] = mode
 		debugLog "<<< updateAirConditioner: out [AC is now #{mode}]"
@@ -602,11 +593,9 @@ EOF
 		debugLog '>>> updateInternalFan: in'
 		value = 'off'
 		if outletGet(GROWLAMP).eql? 'off'
-			# ON for light-off time
-			value = 'on'
+			value = 'off' # OFF for light-off time
 		elsif outletGet(EXHAUSTFAN).eql? 'off'
-			# ON when it's too cold for exhaust fan to run
-			value = 'on'
+			value = 'on' # ON when it's too cold for exhaust fan to run
 		else
 			value = updateFan(INTERNALFAN, GROWZONETEMP)
 		end
@@ -726,46 +715,42 @@ EOF
 	end
 	def archiver timestamp
 		@timestamp = timestamp
+		@history[@timestamp] = {
+			'log' => Array.new
+		}
 		debugLog "========== archiver: #{@timestamp} =========="
 
-		# load switched PDU JSON
-		jsons = { @prefs[SWITCHEDPDU]['json'] => nil }
+		jsons = { @prefs[SWITCHEDPDU]['json'] => nil } # load switched PDU JSON
 
-		# collect all JSON names used
-		@prefs['sensor'].each { |name,data|
+		@prefs['sensor'].each { |name,data| # collect all JSON names used
 			jsons[data['json']] = nil \
 				if data.has_key? 'json' and not jsons.has_key? data['json']
 		}
 
-		# load all JSON files
-		jsons.keys.each { |k|
+		jsons.keys.each { |k| # load all JSON files
 			jsons[k] = loadJson k if File.file?(k) and
 				((@timestamp - File.ctime(k)) < TOLERANCE)
 		}
 
-		@history[@timestamp] = jsons # add data to the history
+		@history[@timestamp]['jsons'] = jsons # add data to the history
 
 		historyDump 'sensors-', 60
 	end
 end
 
-Syslog::Logger.new 'ezgrow::main' # mark syslog records
-
 begin
 	app = Main.new
-
 	commandLine = app.parseCommandLine GetoptLong.new(
 		[ '--config', '-c', GetoptLong::REQUIRED_ARGUMENT ],
 		[ '--operate', '-o', GetoptLong::NO_ARGUMENT ],
 		[ '--archiver', '-l', GetoptLong::NO_ARGUMENT ],
 		[ '--test-email', '-t', GetoptLong::NO_ARGUMENT ],
 	)
-
 	if commandLine.has_key? '--test-email'
 		app.emailNotify 'ApplicationTest', 'Email test#1, application notify'
 		raise RuntimeError, 'Email test#2, exception caught'
 	end
-
+	app.emailNotify 'SystemRestart', "System restarted: #{Time.new}"
 	while true
 		seconds = app.interval - Time.new.sec % app.interval
 		sleep seconds

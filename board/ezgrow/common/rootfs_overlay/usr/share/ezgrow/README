@@ -3,7 +3,9 @@ as you likely don't have the very same hardware that I have. You'll have to
 modify this to reflect YOUR hardware and YOUR requirements and place it under
 the /site/etc. Make it executable too!
 
-Basically this script has all the knowlwdge required for turning the equipment
+Basically this script has all the knowledge required for turning the equipment
 on and off. Basic autoconfiguration is supported for letting the Ruby main
 script know if temperature adjustment is supported for the AC (if not then just
 "ON" and "OFF" will be used).
+
+Water level: full +1.72303V empty -0.01000V @ 24.09099C & 4.75995V
