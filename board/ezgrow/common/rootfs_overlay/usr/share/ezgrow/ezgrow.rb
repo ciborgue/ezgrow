@@ -346,7 +346,6 @@ class Main
 			f.puts JSON.pretty_generate @prefs
 			f.fsync
 		}
-		updateWatchdog
 		value
 	end
 	def debugLog text
@@ -482,6 +481,8 @@ EOF
 			" on required sensor #{sensor}"
 	end
 	def updateWatchdog
+		# Leave watchdog open or else syslog gets swamped with this message:
+		#	watchdog: watchdog0: watchdog did not stop!
 		@watchdog = File.open(@prefs['path']['watchdog'], 'w') \
 			if @watchdog == nil
 		@watchdog.ioctl 0x80045705, 0 # WDIOC_KEEPALIVE
@@ -741,6 +742,7 @@ end
 begin
 	app = Main.new
 	commandLine = app.parseCommandLine GetoptLong.new(
+		[ '--boot-delay', '-b', GetoptLong::NO_ARGUMENT ],
 		[ '--config', '-c', GetoptLong::REQUIRED_ARGUMENT ],
 		[ '--operate', '-o', GetoptLong::NO_ARGUMENT ],
 		[ '--archiver', '-l', GetoptLong::NO_ARGUMENT ],
@@ -749,6 +751,10 @@ begin
 	if commandLine.has_key? '--test-email'
 		app.emailNotify 'ApplicationTest', 'Email test#1, application notify'
 		raise RuntimeError, 'Email test#2, exception caught'
+	end
+	if commandLine.has_key? '--boot-delay'
+		$stderr.puts "Boot delay is requested, sleeping ..."
+		sleep 180
 	end
 	app.emailNotify 'SystemRestart', "System restarted: #{Time.new}"
 	while true
