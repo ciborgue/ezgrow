@@ -494,9 +494,13 @@ EOF
 		outlets['status'][index]
 	end
 	def outletSet name, state
-		if state == outletGet(name)
-			#debugLog "====== outletSet: outlet #{name} is already #{state}"
-		else
+		if (manualOverride = loadFlagFile(name)) != nil
+			debugLog "====== outletSet: outlet #{name} MANUAL OVERRIDE" +
+				" to [#{manualOverride}] (should've been [#{state}])"
+			state = manualOverride
+		end
+
+		if state != outletGet(name)
 			debugLog "====== outletSet: outlet #{name} switching to #{state}"
 			SwitchedPDU.new(@timestamp).run({
 				'--addr' => @prefs[SWITCHEDPDU]['addr'],
@@ -504,15 +508,31 @@ EOF
 				'--name' => name, '--cmnd' => state,
 			})
 			# Don't reload JSON; it takes some time to switch outlet so
-			# just wait until the next cycle. It's not 100% accurate but
-			# it's acceptable to me.
+			# just wait until the next cycle. It's not 100% accurate though
 		end
 		state
 	end
+	def loadFlagFile name
+		flagPath = Dir::Tmpname.tmpdir + '/flag'
+		Dir.mkdir flagPath unless Dir.exists? flagPath
+		flagFile = flagPath + '/' + name
+		return nil unless File.exists? flagFile
+		return nil unless (@timestamp - File.mtime(flagFile)) < 1800
+		File.open(flagFile) { |f|
+			f.each { |line|
+				line.chomp!
+				return line if ['on', 'off'].include? line
+				break
+			}
+		}
+		return nil
+	end
 	def updateGrowLamp
+		# stage is a plant growing stage, 'bloom' or 'grow'
+		stage = @state['stage']
+
 		### no need for dynamic cycle update; it's really 12/12 or 6/18
 		###		(but you can permanently adjust it to 4/20 or even 0/24)
-		stage = @state['stage']
 		cycle = @prefs['light'][stage]['cycle']
 
 		peak = @prefs['temperature']['peak'][stage]
@@ -539,9 +559,9 @@ EOF
 		debugLog ">>> calculateAcMode: in; AC is #{mode}; temp is #{degc}; " +
 			"COOL: #{limit['COOL'].inspect}; VENT: #{limit['VENT'].inspect}"
 		return 'COOL' if degc > limit['COOL']['on'] or
-			'COOL'.eql?(mode) and degc > limit['COOL']['off']
+			'COOL' == mode and degc > limit['COOL']['off']
 		return 'VENT' if degc > limit['VENT']['on'] or
-			'VENT'.eql?(mode) and degc > limit['VENT']['off']
+			'VENT' == mode and degc > limit['VENT']['off']
 		'OFF'
 	end
 	def updateAirConditioner
@@ -563,7 +583,7 @@ EOF
 		mode = calculateAcMode degc
 
 		### possibly change VENT -> OFF if outside is warmer
-		if reftemp[2] != nil and 'VENT'.eql?(mode) and
+		if reftemp[2] != nil and 'VENT' == mode and
 			degc < reftemp[2]['temperature']
 			mode = 'OFF'
 			debugLog "AC is set to 'OFF' because it's colder in than out; " +
@@ -591,12 +611,11 @@ EOF
 		debugLog "<<< updateAirConditioner: out [AC is now #{mode}]"
 	end
 	def updateInternalFan
-		debugLog '>>> updateInternalFan: in'
 		value = 'off'
-		if outletGet(GROWLAMP).eql? 'off'
-			value = 'off' # OFF for light-off time
-		elsif outletGet(EXHAUSTFAN).eql? 'off'
-			value = 'on' # ON when it's too cold for exhaust fan to run
+		if outletGet(GROWLAMP) == 'off'
+			value = 'on'
+		elsif outletGet(EXHAUSTFAN) == 'off'
+			value = 'on'
 		else
 			value = updateFan(INTERNALFAN, GROWZONETEMP)
 		end
@@ -635,48 +654,86 @@ EOF
 		value
 	end
 	def updateAirPump
-		debugLog ">>> updateAirPump: in"
-		value = 'on' # air is always on
+		value = 'on' # air is always ON
 		outletSet AIRPUMP, value
 		debugLog "<<< updateAirPump: out [#{outletGet AIRPUMP}]"
 	end
 	def updateWaterPump
-		# turn OFF if sensor is disabled/unavaliable
-		# leaving pump running can be dangerous
-		debugLog ">>> updateWaterPump: in"
 		value = 'off'
+
+		# 1st. Check if water leak is detected; turn ON if *not* detected
 		sensorConf = @prefs['sensor'][WATERSENSOR]
-		while sensorConf != nil and not sensorConf['disabled']
-			break if (sensorData = loadSensorData WATERSENSOR) == nil
-			voltage = sensorData[sensorConf['use']]['voltage']
-			debugLog "updateWaterPump: got voltage [#{voltage}]" +
-				" vs #{@prefs['voltage'][WATERSENSOR]['voltage']}"
-			unless voltage < @prefs['voltage'][WATERSENSOR]['voltage']
-				value = 'on'
-				break
+		if sensorConf != nil and not sensorConf['disabled']
+			if (sensorData = loadSensorData WATERSENSOR) == nil
+				# data should be there but is not; daemon is dead?
+				emailNotify WATERSENSOR, \
+					"Leak sensor is unavailable! Is daemon dead?"
+			else
+				voltage = sensorData[sensorConf['use']]['voltage']
+				leak = @prefs['voltage'][WATERSENSOR]['voltage']
+				debugLog "updateWaterPump: leak sensor [#{voltage}] / #{leak}"
+				if voltage < leak
+					emailNotify WATERSENSOR, \
+						"Leak is detected! Water pump is no OFF"
+				else
+					value = 'on'
+				end
 			end
-			emailNotify WATERSENSOR, "Water on the floor! Water pump is OFF"
-			break
 		end
+
+		# 2nd. Check water level to prevent water pump running dry
+		sensorConf = @prefs['sensor'][WATERLEVEL]
+		if value == 'on' and sensorConf != nil and not sensorConf['disabled']
+			if (sensorData = loadSensorData WATERLEVEL) == nil
+				# data should be there but is not; daemon is dead?
+				emailNotify WATERLEVEL, \
+					"Level sensor is unavailable! Is daemon dead?"
+				value = 'off'
+			else
+				voltage = sensorData[sensorConf['use']]['voltage']
+				full = @prefs['voltage'][WATERLEVEL]['voltage']
+				debugLog "updateWaterPump: level sensor [#{voltage}] / #{full}"
+				if voltage < (full / 4.0)
+					emailNotify WATERLEVEL, \
+						"Water level is below 1/4, fill it up RIGHT NOW."
+					value = 'off'
+				elsif voltage < (full / 3.0)
+					emailNotify WATERLEVEL, \
+						"Water level is below 1/3, fill it up now."
+				elsif voltage < (full / 2.0)
+					emailNotify WATERLEVEL, \
+						"Water level is below 1/3, consider filling it up."
+				end
+			end
+		end
+
 		outletSet WATERPUMP, value
 		debugLog "<<< updateWaterPump: out [#{outletGet WATERPUMP}]"
 	end
 	def updateFiveVolt
-		# don't do anything; just send an email if 5V is not really 5.00
-		debugLog ">>> updateFiveVolt: in"
-		value = nil
+		voltage = 'unavailable'
+
+		# Don't act upon this one; just send an email if 5V is not really 5.0
 		sensorConf = @prefs['sensor'][FIVEVOLT]
-		while sensorConf != nil and not sensorConf['disabled']
-			break if (sensorData = loadSensorData FIVEVOLT) == nil
-			value = sensorData[sensorConf['use']]['voltage']
-			break unless value < @prefs['voltage'][FIVEVOLT]['voltage']
-			emailNotify FIVEVOLT, "Supply voltage is low: #{value}V"
-			break
+		if sensorConf != nil and not sensorConf['disabled']
+			if (sensorData = loadSensorData FIVEVOLT) == nil
+				# data should be there but is not; daemon is dead?
+				emailNotify FIVEVOLT, \
+					"5v sensor is unavailable! Is daemon dead?"
+			else
+				voltage = sensorData[sensorConf['use']]['voltage']
+				five = @prefs['voltage'][FIVEVOLT]['voltage']
+				debugLog "updateFiveVolt: got 5v sensor #{voltage} / #{five}"
+				if voltage < five
+					emailNotify FIVEVOLT, \
+						"FiveVolt: reading is too low: #{voltage}v/#{five}v" +
+							"; check power supply"
+				end
+			end
 		end
-		debugLog "<<< updateFiveVolt: out [#{value}]"
+		debugLog "<<< updateFiveVolt: out [#{voltage}]"
 	end
 	def updatePduData
-		debugLog ">>> updatePduData: in"
 		pdu = @prefs[SWITCHEDPDU] # get PDU setup
 		pduObject = SwitchedPDU.new(@timestamp)
 		pduObject.run({'--addr' => pdu['addr'], '--json' => pdu['json'],
@@ -689,7 +746,8 @@ EOF
 		limit = pdu['Amp'][outletGet GROWLAMP]
 		if amp > limit['hi']
 			emailNotify SWITCHEDPDU, 'Power consumption is too high!' +
-				'Powering off'
+				"TODO: Powering off"
+			# TODO: power off all outlets
 		elsif amp < limit['lo']
 			emailNotify SWITCHEDPDU, 'Power consumption is too low!' +
 				'Is main lamp failed?'

@@ -146,11 +146,12 @@ EOF
 # these links can't be created in runtime as the squash file system is RO
 makeLink ../../tmp /var/lib/iptraf-ng
 makeLink ../../tmp /var/lib/snmp
-makeLink ../../tmp/.ash_history /root/.ash_history
+makeLink ../tmp/.ash_history /root/.ash_history
+makeLink ../tmp/.python_history /root/.python_history
 
-############### lirc: remove default devinput config and Python libs
+############### lirc: remove default devinput config & setup script
 rm -rf ${TARGET_DIR}/etc/lirc/lircd.conf.d/devinput.lircd.conf \
-	${TARGET_DIR}/usr/lib/python* ${TARGET_DIR}/usr/bin/lirc-setup
+	${TARGET_DIR}/usr/bin/lirc-setup
 
 cloneGit() {
 	if [[ ! -f $2 ]]; then
