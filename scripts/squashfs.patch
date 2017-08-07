@@ -1,0 +1,13 @@
+diff --git a/fs/squashfs/squashfs.mk b/fs/squashfs/squashfs.mk
+index 342c7a8..bc5ec9e 100644
+--- a/fs/squashfs/squashfs.mk
++++ b/fs/squashfs/squashfs.mk
+@@ -13,7 +13,7 @@ ROOTFS_SQUASHFS_ARGS += -comp lzo
+ else ifeq ($(BR2_TARGET_ROOTFS_SQUASHFS4_LZMA),y)
+ ROOTFS_SQUASHFS_ARGS += -comp lzma
+ else ifeq ($(BR2_TARGET_ROOTFS_SQUASHFS4_XZ),y)
+-ROOTFS_SQUASHFS_ARGS += -comp xz
++ROOTFS_SQUASHFS_ARGS += -b 1M -comp xz -Xdict-size 1M -Xbcj arm,armthumb
+ else
+ ROOTFS_SQUASHFS_ARGS += -comp gzip
+ endif

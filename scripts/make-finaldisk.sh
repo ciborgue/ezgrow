@@ -19,7 +19,8 @@ checkSize() {
   fi
 }
 createImage() {
-  dd if=/dev/zero of=$IMAGES/$SD_NAME ibs=$MIB count=$SD_SIZE 2> /dev/null
+  dd if=/dev/zero of=$IMAGES/$SD_NAME \
+	  bs=$MIB count=$SD_SIZE conv=sparse 2> /dev/null
   echo "SD card image created for ${SD_SIZE}MiB."
 }
 
@@ -75,20 +76,20 @@ for p in $(fdisk -l $IMAGES/$SD_NAME | sed -e "1,/^Device/d;s/^.*$SD_NAME/p/;s/*
   case "${p%%,*}" in
     "p1")
       echo "Writing boot @ ${p##*,} .."
-      dd if=$BOOT_FILE of=$IMAGES/$SD_NAME bs=512 seek=${p##*,} conv=notrunc
+      dd if=$BOOT_FILE of=$IMAGES/$SD_NAME bs=512 seek=${p##*,} conv=notrunc,sparse
     ;;
     "p2")
       echo "Writing root @ ${p##*,} .."
-      dd if=$ROOT_FILE of=$IMAGES/$SD_NAME bs=512 seek=${p##*,} conv=notrunc
+      dd if=$ROOT_FILE of=$IMAGES/$SD_NAME bs=512 seek=${p##*,} conv=notrunc,sparse
     ;;
     "p5")
       echo "Writing site @ ${p##*,} .."
-      dd if=$SITE_FILE of=$IMAGES/$SD_NAME bs=512 seek=${p##*,} conv=notrunc
+      dd if=$SITE_FILE of=$IMAGES/$SD_NAME bs=512 seek=${p##*,} conv=notrunc,sparse
     ;;
     "p6")
       echo "Truncating disk image @ ${p##*,} .."
       echo "REPLACE THIS ONE4860d7efb8dd2e91e8ac0df7ce9f3063" | \
-        dd of=$IMAGES/$SD_NAME bs=512 seek=${p##*,} count=1 conv=sync,fsync
+        dd of=$IMAGES/$SD_NAME bs=512 seek=${p##*,} count=1 conv=sync,fsync,sparse
     ;;
     *)
       echo "Skipping partition .."

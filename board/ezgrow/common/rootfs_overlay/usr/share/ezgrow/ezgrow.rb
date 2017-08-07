@@ -38,8 +38,8 @@ class SwitchedPDU
 				'off' => 'outletOff',
 			},
 			'numeric' => {
-				0 => 'off',
 				1 => 'on',
+				2 => 'off',
 			},
 		},
 		'Dataprobe' => {
@@ -722,12 +722,10 @@ EOF
 					"5v sensor is unavailable! Is daemon dead?"
 			else
 				voltage = sensorData[sensorConf['use']]['voltage']
-				five = @prefs['voltage'][FIVEVOLT]['voltage']
+				five = @prefs['voltage'][FIVEVOLT]
 				debugLog "updateFiveVolt: got 5v sensor #{voltage} / #{five}"
-				if voltage < five
-					emailNotify FIVEVOLT, \
-						"FiveVolt: reading is too low: #{voltage}v/#{five}v" +
-							"; check power supply"
+				if voltage < five['min'] || voltage > five['max']
+					emailNotify FIVEVOLT,  "USB voltage warning : #{voltage}"
 				end
 			end
 		end

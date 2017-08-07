@@ -101,7 +101,7 @@ cat <<EOF >> ${PERMISSIONS}
 EOF
 
 # fstab: add /site & /boot, change root fs to squashfs (and RO)
-cp ${PROJECT_BR2_PATH}/system/skeleton/etc/fstab ${TARGET_DIR}/etc/fstab
+cp ${PROJECT_BR2_PATH}/package/skeleton-sysv/skeleton/etc/fstab ${TARGET_DIR}/etc/fstab
 ed -s ${TARGET_DIR}/etc/fstab <<EOF
 /\/dev\/root/c
 /dev/root      /     squashfs defaults,ro                      0 0
@@ -126,11 +126,13 @@ hdmi_safe=1
 dtparam=spi=on
 dtparam=i2c_arm=on
 dtparam=i2c_arm_baudrate=250000
+dtparam=i2c_vc=on
+dtparam=i2c_vc_baudrate=250000
 # Make sure that I2C pull down resistors are activated; without them
 # ADS1115 powered by 5v and BME280 powered by 3.3v won't work properly
 # on the same I2C bus. I really don't understand why; somebody please
 # explain it to me. They work just fine if ADS is powered by 3.3v.
-dtoverlay=i2c-pull-down
+#dtoverlay=i2c-pull-down
 .
 w
 EOF
@@ -208,14 +210,14 @@ rm -f ${TARGET_DIR}/etc/init.d/{S10udev,S20urandom,S49ntp,S04cron}
 
 ############### Build '/site' filesystem
 dd if=/dev/zero of=${BINARIES_DIR}/site.ext4 \
-	bs=$((1024 * 1024)) count=$PROJECT_EZ_SITE_SIZE
+	bs=$((1024 * 1024)) count=$PROJECT_EZ_SITE_SIZE conv=fsync,sparse
 mkfs.ext4 -m 0 -L "SITE" -e remount-ro -E root_owner=0:0 \
 	${BINARIES_DIR}/site.ext4
 if [[ -d ~/ezgrow-site/site ]]; then
 	MPOINT="/tmp/site.$$"
 	mkdir $MPOINT
 	sudo mount -o loop ${BINARIES_DIR}/site.ext4 $MPOINT
-	tar --owner root --group root --directory ~/ezgrow-site/site -cf - . | \
+	tar --owner root --group root --directory ~/ezgrow-site/site -cSf - . | \
 		sudo tar --directory $MPOINT -xf -
 	sudo umount $MPOINT
 	rmdir $MPOINT
