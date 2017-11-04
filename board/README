@@ -1,0 +1,10 @@
+Proposed structure is:
+	<project>/<board>
+
+Where both project and board could be 'common', so:
+	common/common applies to all projects
+	common/raspberrypi3 applies to all RPi3 projects
+	ezgrow/common applies to all ezgrow projects
+	ezgrow/raspberrypi3 applies only to ezgrow on RPi3
+
+Scripts must go from least to most specific directories.

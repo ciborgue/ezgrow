@@ -1,79 +1,63 @@
 #!/usr/bin/ruby
 # vim: set noai noexpandtab ts=4 sw=4:
+require 'pp'
 
 class Build
-	def initialize br2_path, br2_board
-        @br2_path,@br2_board = br2_path,br2_board
+	def initialize ez_project, br2_path, br2_board
+		@cfg = {
+			'ez_path' => $0.sub(/(\/[^\/]+){2}$/, ''),
+			'ez_project' => ez_project,
+			'br2_path' => br2_path,
+			'br2_board' => br2_board,
+		}
 
-        @ez_path = $0.sub(/(\/[^\/]+){2}$/, '')
-		throw "Is this script taken out of context?" \
-			unless File.exists? "#{@ez_path}/external.desc"
-		puts "Setting BR2_EXTERNAL:\n\t#{@ez_path}"
+		throw "Project doesn't exist: #{ez_project}" \
+			unless Dir.exists? "#{@cfg['ez_path']}/project/#{@cfg['ez_project']}"
 
-        # load buildroot's config file; like raspberrypi_defconfig,
-        # raspberrypi2_defconfig, raspberrypi3_defconfig etc.
-		print "Loading #{@br2_board} from #{@br2_path} .."
-        @br2_config=Hash.new
-        File.open("#{@br2_path}/configs/#{@br2_board}_defconfig") { |f|
-            f.each { |line|
-                next if line.match /^$/ or line.match /^[[:space:]]*#/
-                line=line.chomp.split(/=/, 2)
-                @br2_config[line[0]] = line[1]
-            }
-        }
-		puts "\n\t[#{@br2_config.size} line(s)] done"
+        # load buildroot's config file; like 'raspberrypi3_defconfig'
+        @cfg['br2_config'] =
+			loadConfigFile("#{@cfg['br2_path']}/configs/#{@cfg['br2_board']}_defconfig")
 
-        # parse project ('company') name; it's likely 'ezgrow'
-		print "Loading project description file from #{@ez_path} .."
-		File.open("#{@ez_path}/" +
-				'external.desc').each { |line|
-            next unless line.match /^name:[[:space]]*/
-            @project = line.sub(/^name:[[:space:]]*/, '').chomp.downcase
-            break
-        }
-		puts "\n\t[#{@project}] done"
+		['common', ez_project].each { |project|
+			['common', br2_board].each { |board|
+				fragment="#{@cfg['ez_path']}/board/#{project}/#{board}/buildroot.fragment"
+				@cfg['br2_config'].merge!(loadConfigFile(fragment))
+			}
+		}
 
-        # project_config is what needs to be changed in the @br2_config
-		print "Loading project configuration file(s) .."
-		@project_config={
+		# add static config items
+		@cfg['br2_config'].merge!({
             # Default password is your project name; it's ok as password login
             # over the network is disabled. Change here if you're paranoid
             # Default hostname is your project name; there's no need to change
             # it. However, nothing is relied on it so you can do it if you want
-            'BR2_TARGET_GENERIC_ROOT_PASSWD' => "\"#{@project}\"",
-            'BR2_TARGET_GENERIC_HOSTNAME' => "\"#{@project}\"",
-			'BR2_GLOBAL_PATCH_DIR' =>
-				"\"$(BR2_EXTERNAL_#{@project.upcase}_PATH)/patches\"",
+            'BR2_TARGET_GENERIC_ROOT_PASSWD' => "\"#{@cfg['br2_project']}\"",
+            'BR2_TARGET_GENERIC_HOSTNAME' => "\"#{@cfg['br2_project']}\"",
+			'BR2_GLOBAL_PATCH_DIR' => "\"$(BR2_EXTERNAL)/patches\"",
+        })
+	end
+	def loadConfigFile pathname
+		value = Hash.new
+		File.exists?(pathname) && File.open(pathname) { |file|
+            file.each { |line|
+                next if line.match /^$/ or line.match /^[[:space:]]*#/
+                line=line.chomp.split(/=/, 2)
+                value[line[0]] = line[1]
+            }
         }
-		['common', "#{br2_board}"].each { |config|
-			fragment="board/#{@project}/#{config}/buildroot.fragment"
-			print "\n\t#{fragment} .. "
-			if not File.exists? @ez_path + '/' + fragment
-				print "not present"
-				next
-			end
-			File.open("#{@ez_path}/#{fragment}").each { |line|
-				next if line.match /^$/ or line.match /^[[:space:]]*#/
-				line=line.chomp.split(/=/, 2)
-				@project_config[line[0]] = line[1]
-			}
-			print "[now: #{@project_config.size}] ok"
-		}
-		puts "\n\tTotal: #{@project_config.size} line(s); done"
+		value
 	end
     def writePackageLocations
         # this is to be used in post-*.sh scripts
-		print "Saving 'project_locations' file .."
         File.open('project_locations', 'w') { |f|
-            f.puts "PROJECT_BR2_PATH=\"#{@br2_path}\""
-            f.puts "PROJECT_EZ_PATH=\"#{@ez_path}\""
-            f.puts "PROJECT_NAME=\"#{@project}\""
-            f.puts "PROJECT_BR2_BOARD=\"#{@br2_board}\""
+            f.puts "PROJECT_BR2_PATH=\"#{@cfg['br2_path']}\""
+            f.puts "PROJECT_EZ_PATH=\"#{@cfg['ez_path']}\""
+            f.puts "PROJECT_NAME=\"#{@cfg['ez_project']}\""
+            f.puts "PROJECT_BR2_BOARD=\"#{@cfg['br2_board']}\""
 			f.puts "PROJECT_EZ_SITE_SIZE=16"
 			f.puts "PROJECT_EZ_NO_LOGO=\"logo.nologo\""
-			#f.puts "PROJECT_EZ_NO_LOGO=\"\"" # uncomment to get ganja boot logo
+			#f.puts "PROJECT_EZ_NO_LOGO=\"\"" # uncomment to get boot logo
         }
-		puts " done"
 	end
     def writePackageConfig
         # absolute path is, indeed, required by 'make'
@@ -132,13 +116,9 @@ EOF
         writePackageConfig
 	end
 end
-def usage
-    puts "Usage: #{$0.sub /.*\//, ''} BuildrootPATH ModelConfigFile"
-    puts "\ti.e. #{$0.sub /.*\//, ''} ~/buildroot raspberrypi3"
+unless ARGV.length == 3
+    puts "Usage: #{$0.sub /.*\//, ''} project buildroot board"
+    puts "\ti.e. #{$0.sub /.*\//, ''} ezgrow ~/buildroot ezgrow raspberrypi3"
     exit 1
 end
-unless ARGV.length == 2 && File.exists?("#{ARGV[0]}/configs/#{ARGV[1]}_defconfig")
-    usage
-else
-    Build.new(ARGV[0], ARGV[1]).run
-end
+Build.new(ARGV[0], ARGV[1], ARGV[2]).run
