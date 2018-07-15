@@ -6,6 +6,7 @@ class Build
 	def initialize ez_project, br2_path, br2_board
 		@cfg = {
 			'ez_path' => $0.sub(/(\/[^\/]+){2}$/, ''),
+			'ez_target' => ENV['PWD'],
 			'ez_project' => ez_project,
 			'br2_path' => br2_path,
 			'br2_board' => br2_board,
@@ -38,42 +39,50 @@ class Build
 	end
 	def loadConfigFile pathname
 		value = Hash.new
-		File.exists?(pathname) && File.open(pathname) { |file|
-            file.each { |line|
-                next if line.match /^$/ or line.match /^[[:space:]]*#/
-                line=line.chomp.split(/=/, 2)
-                value[line[0]] = line[1]
-            }
-        }
+		if File.exists?(pathname)
+			puts "Loading #{pathname} .."
+			File.open(pathname) { |file|
+				file.each { |line|
+					next if line.match /^$/ or line.match /^[[:space:]]*#/
+					line=line.chomp.split(/=/, 2)
+					value[line[0]] = line[1]
+				}
+			}
+		else
+			puts "Not loading #{pathname} .."
+		end
 		value
 	end
     def writePackageLocations
+		data = {
+            'PROJECT_BR2_PATH' => @cfg['br2_path'],
+            'PROJECT_EZ_PATH' => @cfg['ez_path'],
+            'PROJECT_NAME' => @cfg['ez_project'],
+            'PROJECT_BR2_BOARD' => @cfg['br2_board'],
+			'PROJECT_EZ_SITE_SIZE' => "16",
+			'PROJECT_EZ_NO_LOGO' => "logo.nologo",
+			#'PROJECT_EZ_NO_LOGO' => "", # uncomment to get boot logo
+		}
         # this is to be used in post-*.sh scripts
         File.open('project_locations', 'w') { |f|
-            f.puts "PROJECT_BR2_PATH=\"#{@cfg['br2_path']}\""
-            f.puts "PROJECT_EZ_PATH=\"#{@cfg['ez_path']}\""
-            f.puts "PROJECT_NAME=\"#{@cfg['ez_project']}\""
-            f.puts "PROJECT_BR2_BOARD=\"#{@cfg['br2_board']}\""
-			f.puts "PROJECT_EZ_SITE_SIZE=16"
-			f.puts "PROJECT_EZ_NO_LOGO=\"logo.nologo\""
-			#f.puts "PROJECT_EZ_NO_LOGO=\"\"" # uncomment to get boot logo
+			f.puts(data.map { |k,v| "#{k}=\"#{v}\"" }.join("\n"))
         }
 	end
     def writePackageConfig
         # absolute path is, indeed, required by 'make'
-        defconfig="#{ENV['PWD']}/#{@project}_defconfig"
+        defconfig="#{ENV['PWD']}/#{@cfg['br2_board']}_defconfig"
         File.open(defconfig, 'w') { |f|
-            f.puts @br2_config.merge(@project_config).map { |k,v|
+            f.puts @cfg['br2_config'].map { |k,v|
                 "#{k}=#{v}" }.join "\n"
         }
         makeArguments=[
-            "BR2_EXTERNAL=#{@ez_path}",
+            "BR2_EXTERNAL=#{@cfg['ez_path']}/project/#{@cfg['ez_project']}",
             "BR2_DEFCONFIG=#{defconfig}",
-            "-C #{@br2_path}",
+            "-C #{@cfg['br2_path']}",
             "O=#{ENV['PWD']}",
             "defconfig",
         ]
-        puts "'make' arguments: " + makeArguments.join("\n\t")
+        puts "'make' arguments:\n\t" + makeArguments.join("\n\t")
 		`make #{makeArguments.join ' '}`.each_line { |line|
 			puts line
 		}
@@ -92,23 +101,21 @@ Now you can run it.
 EOF
     end
 	def writePackageGenimage
-        # this is not universal but should work for RPi, RPi2, RPi3
-        print "Making genimage.cfg for #{@br2_board} .."
         genimage=Array.new
-		File.open("#{@br2_path}/board/" +
-				"#{@br2_board}/genimage-#{@br2_board}.cfg") { |f|
+		File.open("#{@cfg['br2_path']}/board/" +
+				"#{@cfg['br2_board']}/genimage-#{@cfg['br2_board']}.cfg") { |f|
             f.each_line { |line|
-                line.chomp!
+				# 1. remove the default partition structure; it'll be built later
+				# 2. change boot partition size from 32M to 16M
                 break if line.match /^image[[:space:]]+sdcard.img/
-                line.sub!(/=[[:space:]]*32M[[:space:]]*$/, '= 16M') \
+                line.sub!(/=[[:space:]]*32M[[:space:]]*$/, "= 16M\n") \
                     if line.match /^[[:space:]]*size[[:space:]]*=/
                 genimage.push line
             }
         }
         File.open('genimage.cfg', 'w') { |f|
-            f.puts genimage.join "\n"
+            f.puts genimage.join ''
         }
-		puts " done"
 	end
 	def run
 		writePackageLocations

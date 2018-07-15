@@ -1,0 +1,53 @@
+# build caching: ccache & download
+BR2_CCACHE=y
+BR2_DL_DIR="$(BASE_DIR)/../dl"
+
+# required for RPi3 or else it can generate swp{b} illegal instruction
+BR2_GCC_VERSION_7_X=y
+BR2_GCC_ENABLE_LTO=y
+BR2_GCC_ENABLE_OPENMP=y
+
+# kernel options
+BR2_LINUX_KERNEL=y
+BR2_LINUX_KERNEL_ZIMAGE=y
+BR2_LINUX_KERNEL_XZ=y
+BR2_ROOTFS_DEVICE_TABLE_SUPPORTS_EXTENDED_ATTRIBUTES=y
+
+# root file system: SQUASHFS
+BR2_TARGET_ROOTFS_SQUASHFS=y
+BR2_TARGET_ROOTFS_SQUASHFS4_XZ=y
+BR2_TARGET_GENERIC_REMOUNT_ROOTFS_RW=n
+BR2_TARGET_ROOTFS_TAR=n
+BR2_TARGET_ROOTFS_EXT2=n
+BR2_TARGET_ROOTFS_EXT2_4=n
+
+# I have better success with EUDEV than with MDEV; it's more stable across
+# the hardware. You can get away with MDEV so I leave the MDEV config there.
+#BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_MDEV=y
+BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_EUDEV=y
+
+# toolchain options: WCHAR, LOCALE and SSP
+BR2_TOOLCHAIN_BUILDROOT_WCHAR=y
+BR2_TOOLCHAIN_BUILDROOT_LOCALE=y
+BR2_TOOLCHAIN_BUILDROOT_USE_SSP=y
+BR2_SSP_REGULAR=y
+#BR2_SSP_STRONG=y
+
+# make sure post-build.sh makes a fresh copy of these from the distribution
+BR2_ROOTFS_DEVICE_TABLE="$(BASE_DIR)/device_table.txt"
+BR2_ROOTFS_USERS_TABLES="$(BASE_DIR)/user_table.text"
+
+# post build scripts: these are just the drivers that call project scripts
+BR2_ROOTFS_POST_BUILD_SCRIPT="$(BR2_EXTERNAL)/../common/scripts/post-build.sh"
+BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL)/../common/scripts/post-image.sh"
+
+# optimize everything for size
+BR2_OPTIMIZE_S=y
+
+# these are not strictly required but recommended for chasing the elusive PDUs
+BR2_PACKAGE_IPTABLES=y
+BR2_PACKAGE_TCPDUMP=y
+BR2_PACKAGE_NMAP=y
+
+# strace is very useful for system administration
+BR2_PACKAGE_STRACE=y
